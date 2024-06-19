@@ -42,8 +42,17 @@ validator(
                 owner,
                 allowanceNFTPolicyId,
               ),
-              validate_all_outputs(),
+              validate_all_outputs(
+                referenceInputs,
+                outputs,
+                securityPolicyId,
+                securityAssetName,
+                receiversNFTIndex,
+                ownScriptHash,
+                allowanceNFTPolicyId,
+              ),
             }
+          //TODO Remove?
           Freeze -> True
         }
     }
@@ -66,7 +75,15 @@ fn is_user_allowed(
 }
 
 //TODO THIS COULD BE MADE ONCE FOR ALL OUTPUTS USING WITHDRAW 0
-fn validate_all_outputs() {
+fn validate_all_outputs(
+  referenceInputs: List<Input>,
+  outputs: List<Output>,
+  securityPolicyId: PolicyId,
+  securityAssetName: AssetName,
+  receiversNFTIndex: List<Int>,
+  ownScriptHash: ByteArray,
+  allowanceNFTPolicyId: PolicyId,
+) {
   let outputsWithThisToken =
     get_outputs_with_token(outputs, securityPolicyId, securityAssetName)
 
