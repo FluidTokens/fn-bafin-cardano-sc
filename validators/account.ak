@@ -4,7 +4,7 @@ use aiken/transaction/value.{flatten, quantity_of}
 use types.{AcceptedLessonDatum, LessonRequestDatum}
 use utils.{
   get_outputs_with_token, get_own_hash, is_before, is_output_to_sc,
-  must_be_signed_by,
+  is_policyId_present, must_be_signed_by,
 }
 
 type Redeemer {
@@ -14,7 +14,6 @@ type Redeemer {
     //indexes in the reference input list, one for each output that receives tokens
     receiversNFTIndex: List<Int>,
   }
-  Freeze
 }
 
 validator(
@@ -37,14 +36,14 @@ validator(
         when redeemer is {
           Transfer(ownerNFTIndex, receiversNFTIndex) -> and {
               is_user_allowed(
-                referenceInputs,
+                ctx.transaction.reference_inputs,
                 ownerNFTIndex,
                 owner,
                 allowanceNFTPolicyId,
               ),
               validate_all_outputs(
-                referenceInputs,
-                outputs,
+                ctx.transaction.reference_inputs,
+                ctx.transaction.outputs,
                 securityPolicyId,
                 securityAssetName,
                 receiversNFTIndex,
@@ -52,8 +51,6 @@ validator(
                 allowanceNFTPolicyId,
               ),
             }
-          //TODO Remove?
-          Freeze -> True
         }
     }
   }

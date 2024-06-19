@@ -9,5 +9,3 @@ pub type SecurityDatum {
   issueDate: Int,
   maturityDate: Int,
 }
-
-pub type AccountDatum {AccountDatum}

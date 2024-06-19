@@ -1,24 +1,11 @@
 use aiken/interval.{Finite, Interval}
-use aiken/list.{length}
+use aiken/list.{any, length}
 use aiken/time.{PosixTime}
 use aiken/transaction.{Input, Output, ScriptPurpose, Spend, Transaction}
 use aiken/transaction/credential.{
   Address, ScriptCredential, VerificationKeyCredential,
 }
-
-pub fn is_before(txValidityRange: Interval<PosixTime>, time: Int) {
-  when txValidityRange.upper_bound.bound_type is {
-    Finite(end) -> end < time
-    _ -> fail
-  }
-}
-
-pub fn is_after(txValidityRange: Interval<PosixTime>, time: Int) {
-  when txValidityRange.lower_bound.bound_type is {
-    Finite(start) -> start > time
-    _ -> fail
-  }
-}
+use aiken/transaction/value.{flatten, policies, quantity_of}
 
 pub fn must_be_signed_by(transaction: Transaction, address: Address) {
   expect VerificationKeyCredential(hash) = address.payment_credential
@@ -67,4 +54,19 @@ pub fn only_one_input_from_sc(inputs: List<Input>) {
   let inputsWithDatum =
     list.filter(inputs, fn(input) { is_script_output(input.output) })
   length(inputsWithDatum) == 1
+}
+
+pub fn is_policyId_present(output: Output, policyId: PolicyId) -> Bool {
+  list.any(policies(output.value)) == policyId
+}
+
+pub fn get_outputs_with_token(
+  outputs: List<Output>,
+  policyId: PolicyId,
+  assetName: AssetName,
+) -> List<Output> {
+  list.filter(
+    outputs,
+    fn(output) { quantity_of(output.value, policyId, assetName) > 0 },
+  )
 }
