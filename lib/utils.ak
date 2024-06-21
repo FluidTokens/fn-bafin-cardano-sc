@@ -1,14 +1,26 @@
+use aiken/hash.{Blake2b_224, Hash}
 use aiken/interval.{Finite, Interval}
 use aiken/list.{any, length}
 use aiken/time.{PosixTime}
 use aiken/transaction.{Input, Output, ScriptPurpose, Spend, Transaction}
 use aiken/transaction/credential.{
-  Address, ScriptCredential, VerificationKeyCredential,
+  Address, Inline, Script, ScriptCredential, StakeCredential,
+  VerificationKeyCredential,
 }
-use aiken/transaction/value.{flatten, policies, quantity_of}
+use aiken/transaction/value.{AssetName,
+  PolicyId, flatten, policies, quantity_of}
 
 pub fn must_be_signed_by(transaction: Transaction, address: Address) {
   expect VerificationKeyCredential(hash) = address.payment_credential
+  list.has(transaction.extra_signatories, hash)
+}
+
+pub fn must_be_signed_by_stake_credential(
+  transaction: Transaction,
+  credential: StakeCredential,
+) {
+  expect Inline(inlineStakeCredential) = credential
+  expect VerificationKeyCredential(hash) = inlineStakeCredential
   list.has(transaction.extra_signatories, hash)
 }
 
@@ -57,7 +69,7 @@ pub fn only_one_input_from_sc(inputs: List<Input>) {
 }
 
 pub fn is_policyId_present(output: Output, policyId: PolicyId) -> Bool {
-  list.any(policies(output.value)) == policyId
+  list.any(policies(output.value), fn(policy) { policy == policyId })
 }
 
 pub fn get_outputs_with_token(

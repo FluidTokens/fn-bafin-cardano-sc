@@ -1,0 +1,166 @@
+use aiken/hash.{Blake2b_224, Hash}
+use aiken/list.{length}
+use aiken/pairs.{foldl}
+use aiken/transaction.{Input, Output, ScriptContext, Spend, WithdrawFrom}
+use aiken/transaction/credential.{
+  Address, Inline, Script, ScriptCredential, StakeCredential,
+}
+use aiken/transaction/value.{AssetName, PolicyId, flatten}
+use utils.{
+  get_inputs_from_sc, get_outputs_with_token, get_own_hash, is_output_to_sc,
+  is_policyId_present, must_be_signed_by_stake_credential,
+}
+
+type Redeemer {
+  SpendRedeemer { withdrawIndex: Int }
+  Transfer {
+    //StakeCredential of the owner of the utxos that are being transferred
+    ownerStakeCredential: StakeCredential,
+    //index in the reference input list
+    ownerNFTIndex: Int,
+    //indexes in the reference input list, one for each output that receives tokens
+    receiversNFTIndex: List<Int>,
+  }
+}
+
+//This is what should be public to use this contract
+//[tokenPolicyId, tokenAssetName, allowanceNFTPolicyId, stateManagerAddress, transferManagerAddress]
+validator(
+  securityPolicyId: PolicyId,
+  securityAssetName: AssetName,
+  allowanceNFTPolicyId: PolicyId,
+  _securityScriptHash: ByteArray,
+) {
+  fn validate(redeemer: Redeemer, ctx: ScriptContext) -> Bool {
+    when ctx.purpose is {
+      Spend(_) -> {
+        expect SpendRedeemer(withdrawIndex) = redeemer
+        let ownScriptHash = get_own_hash(ctx.purpose, ctx.transaction.inputs)
+
+        expect Some(withdrawScript) =
+          list.at(ctx.transaction.withdrawals, withdrawIndex)
+        when withdrawScript is {
+          Inline(ScriptCredential(script)) -> script == ownScriptHash
+          _ -> False
+        }
+      }
+      WithdrawFrom(withdrawStakeCredential) ->
+        when redeemer is {
+          Transfer(ownerStakeCredential, ownerNFTIndex, receiversNFTIndex) -> {
+            expect Inline(ScriptCredential(ownScriptHash)) =
+              withdrawStakeCredential
+            expect Some(userRefInput) =
+              list.at(ctx.transaction.reference_inputs, ownerNFTIndex)
+            and {
+              must_be_signed_by_stake_credential(
+                ctx.transaction,
+                ownerStakeCredential,
+              ),
+              validate_all_inputs(
+                ctx.transaction.inputs,
+                ownScriptHash,
+                userRefInput,
+                ownerStakeCredential,
+                allowanceNFTPolicyId,
+              ),
+              validate_all_outputs(
+                ctx.transaction.reference_inputs,
+                ctx.transaction.outputs,
+                ownScriptHash,
+                securityPolicyId,
+                securityAssetName,
+                receiversNFTIndex,
+                allowanceNFTPolicyId,
+              ),
+            }
+          }
+        }
+      _ -> False
+    }
+  }
+}
+
+fn validate_all_inputs(
+  inputs: List<Input>,
+  accountScriptHash: Hash<Blake2b_224, Script>,
+  userRefInput: Input,
+  stakeCredential: StakeCredential,
+  allowanceNFTPolicyId: PolicyId,
+) {
+  //only inputs from account
+  let accountInputs = get_inputs_from_sc(inputs, accountScriptHash)
+  and {
+    //user must be allowed to transfer
+    is_user_allowed(userRefInput, stakeCredential, allowanceNFTPolicyId),
+    //all inputs from account must belong to this user
+    list.all(
+      accountInputs,
+      fn(input) {
+        expect Some(inputStakeCredential) =
+          input.output.address.stake_credential
+        inputStakeCredential == stakeCredential
+      },
+    ),
+  }
+}
+
+fn is_user_allowed(
+  userRefInput: Input,
+  stakeCredential: StakeCredential,
+  allowanceNFTPolicyId: PolicyId,
+) {
+  expect Some(refInputStakeCredential) =
+    userRefInput.output.address.stake_credential
+  and {
+    //Here CIP-113 could add additional checks that in this case we don't need
+    refInputStakeCredential == stakeCredential,
+    is_policyId_present(userRefInput.output, allowanceNFTPolicyId),
+  }
+}
+
+fn is_user_allowed_with_index(
+  referenceInputs: List<Input>,
+  referenceInputNFTIndex: Int,
+  stakeCredential: StakeCredential,
+  allowanceNFTPolicyId: PolicyId,
+) {
+  expect Some(userRefInput) = list.at(referenceInputs, referenceInputNFTIndex)
+  is_user_allowed(userRefInput, stakeCredential, allowanceNFTPolicyId)
+}
+
+fn validate_all_outputs(
+  referenceInputs: List<Input>,
+  outputs: List<Output>,
+  accountScriptHash: Hash<Blake2b_224, Script>,
+  securityPolicyId: PolicyId,
+  securityAssetName: AssetName,
+  receiversNFTIndex: List<Int>,
+  allowanceNFTPolicyId: PolicyId,
+) {
+  let outputsWithThisToken =
+    get_outputs_with_token(outputs, securityPolicyId, securityAssetName)
+
+  //TODO should I check that the 2 lists have same length?
+  let outputsAndRefInputIndexes =
+    list.zip(outputsWithThisToken, receiversNFTIndex)
+
+  list.all(
+    outputsAndRefInputIndexes,
+    fn(outputAndRefIndex) {
+      let output = outputAndRefIndex.1st
+      expect Some(outputStakeCredential) = output.address.stake_credential
+      and {
+        is_output_to_sc(output, accountScriptHash),
+        is_user_allowed_with_index(
+          referenceInputs,
+          outputAndRefIndex.2nd,
+          outputStakeCredential,
+          allowanceNFTPolicyId,
+        ),
+        //TODO Check that output.datum is noDatum
+        //dos protection
+        length(flatten(output.value)) <= 5,
+      }
+    },
+  )
+}
