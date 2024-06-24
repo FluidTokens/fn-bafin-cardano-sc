@@ -1,7 +1,8 @@
-//Each instance of this SC produces a certain type of security tokens, authorized by the issuer and always sent to the
-//correct transfer_manager instance.
-//The tokens minted here must NEVER leave the transfer_manager instance.
-//The token AssetName must always be the same and it's determined by the transfer_manager parameter.
+//There is an instance of this SC for each issuer token (PolicyId+AssetName), which also means there's an instance of this SC
+//for each type of security tokens.
+//Each utxo that contains a admin_factory token can optionally have a user stake_credential.
+//If there is, it means the user is admin.
+//To remove the user's authorization, issuer just has to spend the user utxo and remove his stake_credentials.
 use aiken/list
 use aiken/transaction.{ScriptContext}
 use aiken/transaction/credential.{StakeCredential}
@@ -15,7 +16,7 @@ type Redeemer {
 }
 
 validator(issuerTokenPolicyId: PolicyId, issuerTokenAssetName: AssetName) {
-  fn minter(redeemer: Redeemer, ctx: ScriptContext) {
+  fn spend(redeemer: Redeemer, ctx: ScriptContext) {
     expect Some(issuerRefInput) =
       list.at(
         ctx.transaction.reference_inputs,

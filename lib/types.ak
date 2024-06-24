@@ -1,4 +1,3 @@
-use aiken/transaction/credential.{Address}
 use aiken/transaction/value.{AssetName, PolicyId}
 
 pub type SecurityDatum {
@@ -7,7 +6,8 @@ pub type SecurityDatum {
   securityAssetName: AssetName,
   name: ByteArray,
   isin: ByteArray,
-  issuer: Address,
+  issuerTokenPolicyId: PolicyId,
+  issuerTokenAssetName: AssetName,
   issueDate: Int,
   maturityDate: Int,
 }

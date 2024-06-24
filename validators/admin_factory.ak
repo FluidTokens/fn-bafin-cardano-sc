@@ -1,7 +1,7 @@
-//Each instance of this SC produces a certain type of security tokens, authorized by the issuer and always sent to the
-//correct transfer_manager instance.
-//The tokens minted here must NEVER leave the transfer_manager instance.
-//The token AssetName must always be the same and it's determined by the transfer_manager parameter.
+//There is an instance of this SC for each issuer token (PolicyId+AssetName), which also means there's an instance of this SC
+//for each type of security tokens.
+//This SC produces admin tokens that must be always sent to the admin_manager.
+//The token AssetName must always be the same and it's determined by the state_factory and state_manager parameter.
 use aiken/list
 use aiken/transaction.{ScriptContext}
 use aiken/transaction/credential.{StakeCredential}

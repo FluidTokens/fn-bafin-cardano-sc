@@ -1,3 +1,11 @@
+//Each instance of this SC contains one type of security tokens of all users, where each utxo has the user's stake_credential.
+//The user is authorized to spend or receive the security tokens only if the state_manager has an utxo with
+//a valid state token issued by the issuer and with the user's stake_credential.
+//The security token has PolicyId and AssetName of transfer_factory.
+//The user state token has PolicyId and AssetName of state_factory.
+
+//This is what should be public to use this contract
+//[tokenPolicyId, tokenAssetName, userStatePolicyId, stateManagerAddress, transferManagerAddress]
 use aiken/hash.{Blake2b_224, Hash}
 use aiken/list.{length}
 use aiken/transaction.{Input, Output, ScriptContext, Spend, WithdrawFrom}
@@ -5,9 +13,10 @@ use aiken/transaction/credential.{
   Address, Inline, Script, ScriptCredential, StakeCredential,
 }
 use aiken/transaction/value.{AssetName, PolicyId, flatten}
+use common.{is_user_allowed}
 use utils.{
   get_inputs_from_sc, get_outputs_with_token, get_own_hash, is_output_to_sc,
-  is_policyId_present, must_be_signed_by_stake_credential,
+  must_be_signed_by_stake_credential,
 }
 
 type Redeemer {
@@ -22,13 +31,11 @@ type Redeemer {
   }
 }
 
-//This is what should be public to use this contract
-//[tokenPolicyId, tokenAssetName, allowanceNFTPolicyId, stateManagerAddress, transferManagerAddress]
 validator(
-  securityPolicyId: PolicyId,
-  securityAssetName: AssetName,
-  allowanceNFTPolicyId: PolicyId,
-  _securityScriptHash: ByteArray,
+  securityTokenPolicyId: PolicyId,
+  securityTokenAssetName: AssetName,
+  userStatePolicyId: PolicyId,
+  userStateAssetName: AssetName,
 ) {
   fn validate(redeemer: Redeemer, ctx: ScriptContext) -> Bool {
     when ctx.purpose is {
@@ -61,16 +68,18 @@ validator(
                 ownScriptHash,
                 userRefInput,
                 ownerStakeCredential,
-                allowanceNFTPolicyId,
+                userStatePolicyId,
+                userStateAssetName,
               ),
               validate_all_outputs(
                 ctx.transaction.reference_inputs,
                 ctx.transaction.outputs,
                 ownScriptHash,
-                securityPolicyId,
-                securityAssetName,
+                securityTokenPolicyId,
+                securityTokenAssetName,
                 receiversNFTIndex,
-                allowanceNFTPolicyId,
+                userStatePolicyId,
+                userStateAssetName,
               ),
             }
           }
@@ -86,13 +95,19 @@ fn validate_all_inputs(
   accountScriptHash: Hash<Blake2b_224, Script>,
   userRefInput: Input,
   stakeCredential: StakeCredential,
-  allowanceNFTPolicyId: PolicyId,
+  userStatePolicyId: PolicyId,
+  userStateAssetName: AssetName,
 ) {
   //only inputs from account
   let accountInputs = get_inputs_from_sc(inputs, accountScriptHash)
   and {
     //user must be allowed to transfer
-    is_user_allowed(userRefInput, stakeCredential, allowanceNFTPolicyId),
+    is_user_allowed(
+      userRefInput,
+      stakeCredential,
+      userStatePolicyId,
+      userStateAssetName,
+    ),
     //all inputs from account must belong to this user
     list.all(
       accountInputs,
@@ -105,41 +120,38 @@ fn validate_all_inputs(
   }
 }
 
-fn is_user_allowed(
-  userRefInput: Input,
-  stakeCredential: StakeCredential,
-  allowanceNFTPolicyId: PolicyId,
-) {
-  expect Some(refInputStakeCredential) =
-    userRefInput.output.address.stake_credential
-  and {
-    //Here CIP-113 could add additional checks that in this case we don't need
-    refInputStakeCredential == stakeCredential,
-    is_policyId_present(userRefInput.output, allowanceNFTPolicyId),
-  }
-}
-
 fn is_user_allowed_with_index(
   referenceInputs: List<Input>,
   referenceInputNFTIndex: Int,
   stakeCredential: StakeCredential,
-  allowanceNFTPolicyId: PolicyId,
+  userStatePolicyId: PolicyId,
+  userStateAssetName: AssetName,
 ) {
   expect Some(userRefInput) = list.at(referenceInputs, referenceInputNFTIndex)
-  is_user_allowed(userRefInput, stakeCredential, allowanceNFTPolicyId)
+  is_user_allowed(
+    userRefInput,
+    stakeCredential,
+    userStatePolicyId,
+    userStateAssetName,
+  )
 }
 
 fn validate_all_outputs(
   referenceInputs: List<Input>,
   outputs: List<Output>,
   accountScriptHash: Hash<Blake2b_224, Script>,
-  securityPolicyId: PolicyId,
-  securityAssetName: AssetName,
+  securityTokenPolicyId: PolicyId,
+  securityTokenAssetName: AssetName,
   receiversNFTIndex: List<Int>,
-  allowanceNFTPolicyId: PolicyId,
+  userStatePolicyId: PolicyId,
+  userStateAssetName: AssetName,
 ) {
   let outputsWithThisToken =
-    get_outputs_with_token(outputs, securityPolicyId, securityAssetName)
+    get_outputs_with_token(
+      outputs,
+      securityTokenPolicyId,
+      securityTokenAssetName,
+    )
 
   //TODO should I check that the 2 lists have same length?
   let outputsAndRefInputIndexes =
@@ -156,7 +168,8 @@ fn validate_all_outputs(
           referenceInputs,
           outputAndRefIndex.2nd,
           outputStakeCredential,
-          allowanceNFTPolicyId,
+          userStatePolicyId,
+          userStateAssetName,
         ),
         //TODO Check that output.datum is noDatum
         //dos protection

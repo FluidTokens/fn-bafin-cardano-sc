@@ -1,14 +1,11 @@
 use aiken/hash.{Blake2b_224, Hash}
-use aiken/interval.{Finite, Interval}
-use aiken/list.{any, length}
-use aiken/time.{PosixTime}
+use aiken/list.{length}
 use aiken/transaction.{Input, Output, ScriptPurpose, Spend, Transaction}
 use aiken/transaction/credential.{
   Address, Inline, Script, ScriptCredential, StakeCredential,
   VerificationKeyCredential,
 }
-use aiken/transaction/value.{AssetName,
-  PolicyId, flatten, policies, quantity_of}
+use aiken/transaction/value.{AssetName, PolicyId, policies, quantity_of}
 
 pub fn must_be_signed_by(transaction: Transaction, address: Address) {
   expect VerificationKeyCredential(hash) = address.payment_credential

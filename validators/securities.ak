@@ -1,12 +1,13 @@
-//Each instance of this SC produces a certain type of security tokens, authorized by the issuer and always sent to the
-//correct transfer_manager instance.
-//The tokens minted here must NEVER leave the transfer_manager instance.
-//The token AssetName must always be the same and it's determined by the transfer_manager parameter.
+//This is one SC for all existing securities.
+//In this SC the issuer registers, edits or cancels new securities.
+//As everybody can send utxos in this SC, only the ones created by a proper issuer are valid.
+//Proper issuer: there's an issuer token in issuer_manager with his stake_credential.
+//Only the issuer designated in the datum can edit/cancel the security.
 use aiken/list
 use aiken/transaction.{ScriptContext}
 use aiken/transaction/credential.{StakeCredential}
-use aiken/transaction/value.{AssetName, PolicyId}
 use common.{is_user_allowed}
+use types.{SecurityDatum}
 use utils.{must_be_signed_by_stake_credential}
 
 type Redeemer {
@@ -14,8 +15,8 @@ type Redeemer {
   issuerTokenRefInputIndex: Int,
 }
 
-validator(issuerTokenPolicyId: PolicyId, issuerTokenAssetName: AssetName) {
-  fn minter(redeemer: Redeemer, ctx: ScriptContext) {
+validator(_version: Int) {
+  fn spend(datum: SecurityDatum, redeemer: Redeemer, ctx: ScriptContext) {
     expect Some(issuerRefInput) =
       list.at(
         ctx.transaction.reference_inputs,
@@ -29,8 +30,8 @@ validator(issuerTokenPolicyId: PolicyId, issuerTokenAssetName: AssetName) {
       is_user_allowed(
         issuerRefInput,
         redeemer.issuerStakeCredential,
-        issuerTokenPolicyId,
-        issuerTokenAssetName,
+        datum.issuerTokenPolicyId,
+        datum.issuerTokenAssetName,
       ),
     }
   }
