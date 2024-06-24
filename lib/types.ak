@@ -11,3 +11,7 @@ pub type SecurityDatum {
   issueDate: Int,
   maturityDate: Int,
 }
+
+pub type TransferDatum {
+  i: Int,
+}

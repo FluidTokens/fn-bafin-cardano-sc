@@ -8,12 +8,15 @@
 //[tokenPolicyId, tokenAssetName, userStatePolicyId, stateManagerAddress, transferManagerAddress]
 use aiken/hash.{Blake2b_224, Hash}
 use aiken/list.{length}
-use aiken/transaction.{Input, Output, ScriptContext, Spend, WithdrawFrom}
+use aiken/transaction.{
+  InlineDatum, Input, Output, ScriptContext, Spend, WithdrawFrom,
+}
 use aiken/transaction/credential.{
   Address, Inline, Script, ScriptCredential, StakeCredential,
 }
 use aiken/transaction/value.{AssetName, PolicyId, flatten}
 use common.{is_user_allowed}
+use types.{TransferDatum}
 use utils.{
   get_inputs_from_sc, get_outputs_with_token, get_own_hash, is_output_to_sc,
   must_be_signed_by_stake_credential,
@@ -37,7 +40,11 @@ validator(
   userStatePolicyId: PolicyId,
   userStateAssetName: AssetName,
 ) {
-  fn validate(redeemer: Redeemer, ctx: ScriptContext) -> Bool {
+  fn validate(
+    _datum: TransferDatum,
+    redeemer: Redeemer,
+    ctx: ScriptContext,
+  ) -> Bool {
     when ctx.purpose is {
       Spend(_) -> {
         expect SpendRedeemer(withdrawIndex) = redeemer
@@ -153,28 +160,32 @@ fn validate_all_outputs(
       securityTokenAssetName,
     )
 
-  //TODO should I check that the 2 lists have same length?
   let outputsAndRefInputIndexes =
     list.zip(outputsWithThisToken, receiversNFTIndex)
 
-  list.all(
-    outputsAndRefInputIndexes,
-    fn(outputAndRefIndex) {
-      let output = outputAndRefIndex.1st
-      expect Some(outputStakeCredential) = output.address.stake_credential
-      and {
-        is_output_to_sc(output, accountScriptHash),
-        is_user_allowed_with_index(
-          referenceInputs,
-          outputAndRefIndex.2nd,
-          outputStakeCredential,
-          userStatePolicyId,
-          userStateAssetName,
-        ),
-        //TODO Check that output.datum is noDatum
-        //dos protection
-        length(flatten(output.value)) <= 5,
-      }
-    },
-  )
+  and {
+    length(outputsWithThisToken) == length(receiversNFTIndex),
+    list.all(
+      outputsAndRefInputIndexes,
+      fn(outputAndRefIndex) {
+        let output = outputAndRefIndex.1st
+        expect Some(outputStakeCredential) = output.address.stake_credential
+        expect InlineDatum(output_datum) = output.datum
+        expect parsedDatum: TransferDatum = output_datum
+        and {
+          is_output_to_sc(output, accountScriptHash),
+          is_user_allowed_with_index(
+            referenceInputs,
+            outputAndRefIndex.2nd,
+            outputStakeCredential,
+            userStatePolicyId,
+            userStateAssetName,
+          ),
+          parsedDatum == TransferDatum { i: 0 },
+          //dos protection
+          length(flatten(output.value)) <= 5,
+        }
+      },
+    ),
+  }
 }
