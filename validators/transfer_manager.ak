@@ -1,6 +1,5 @@
 use aiken/hash.{Blake2b_224, Hash}
 use aiken/list.{length}
-use aiken/pairs.{foldl}
 use aiken/transaction.{Input, Output, ScriptContext, Spend, WithdrawFrom}
 use aiken/transaction/credential.{
   Address, Inline, Script, ScriptCredential, StakeCredential,
@@ -40,7 +39,8 @@ validator(
         expect Some(withdrawScript) =
           list.at(ctx.transaction.withdrawals, withdrawIndex)
         when withdrawScript is {
-          Inline(ScriptCredential(script)) -> script == ownScriptHash
+          Pair(Inline(ScriptCredential(script)), _amnt) ->
+            script == ownScriptHash
           _ -> False
         }
       }
@@ -74,6 +74,7 @@ validator(
               ),
             }
           }
+          _ -> False
         }
       _ -> False
     }

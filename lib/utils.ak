@@ -24,7 +24,10 @@ pub fn must_be_signed_by_stake_credential(
   list.has(transaction.extra_signatories, hash)
 }
 
-pub fn get_own_hash(purpose: ScriptPurpose, txInputs: List<Input>) {
+pub fn get_own_hash(
+  purpose: ScriptPurpose,
+  txInputs: List<Input>,
+) -> Hash<Blake2b_224, Script> {
   expect Spend(output_reference) = purpose
 
   let inputList =
