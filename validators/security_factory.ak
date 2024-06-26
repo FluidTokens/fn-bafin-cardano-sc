@@ -3,6 +3,8 @@
 //The tokens minted here must NEVER leave the transfer_manager instance.
 //The token AssetName must always be the same and it's determined by the transfer_manager parameter.
 //Issuer cannot mint more than the max amount written in the security manager utxo.
+use aiken/bytearray
+use aiken/hash.{sha2_256}
 use aiken/list.{length}
 use aiken/transaction.{InlineDatum, Input, Mint, Output, ScriptContext}
 use aiken/transaction/credential.{StakeCredential}
@@ -16,19 +18,12 @@ use utils.{must_be_signed_by_stake_credential}
 type Redeemer {
   issuerStakeCredential: StakeCredential,
   issuerTokenRefInputIndex: Int,
-  //input index of the security coming to security_manager SC
-  securityManagerInputIndex: Int,
   //input index of the security returning to security_manager SC
   securityManagerOutputIndex: Int,
-  transferAmount: Int,
+  securityDatum: SecurityDatum,
 }
 
-validator(
-  issuerTokenPolicyId: PolicyId,
-  issuerTokenAssetName: AssetName,
-  securityManagerTokenPolicyId: PolicyId,
-  securityManagerTokenAssetName: AssetName,
-) {
+validator(issuerTokenPolicyId: PolicyId, issuerTokenAssetName: AssetName) {
   fn minter(redeemer: Redeemer, ctx: ScriptContext) {
     expect Mint(ownPolicyId) = ctx.purpose
     expect Some(issuerRefInput) =
@@ -36,11 +31,20 @@ validator(
         ctx.transaction.reference_inputs,
         redeemer.issuerTokenRefInputIndex,
       )
-    expect Some(securityManagerInput) =
-      list.at(ctx.transaction.inputs, redeemer.securityManagerInputIndex)
     expect Some(securityManagerOutput) =
       list.at(ctx.transaction.outputs, redeemer.securityManagerOutputIndex)
+    expect Some(firstInput) = list.at(ctx.transaction.inputs, 0)
+
+    let nftAssetName =
+      sha2_256(
+        bytearray.push(
+          firstInput.output_reference.transaction_id.hash,
+          firstInput.output_reference.output_index,
+        ),
+      )
     and {
+      //overflow protection
+      firstInput.output_reference.output_index < 256,
       must_be_signed_by_stake_credential(
         ctx.transaction,
         redeemer.issuerStakeCredential,
@@ -51,59 +55,34 @@ validator(
         issuerTokenPolicyId,
         issuerTokenAssetName,
       ),
-      //security input must have the NFT
-      quantity_of(
-        securityManagerInput.output.value,
-        securityManagerTokenPolicyId,
-        securityManagerTokenAssetName,
-      ) > 0,
       quantity_of(
         from_minted_value(ctx.transaction.mint),
         ownPolicyId,
-        "securityToken",
-      ) == redeemer.transferAmount,
-      //TODO Issuer must be super careful to send the tokens (with correct datum) to transfer_manager as we cannot enforce it!
-      validate_security_output(
-        securityManagerInput,
+        nftAssetName,
+      ) == 1,
+      //TODO Issuer must be super careful to send the tokens (with correct datum) to security_manager as we cannot enforce it!
+      validate_security_manager_output(
+        ownPolicyId,
+        nftAssetName,
         securityManagerOutput,
-        redeemer.transferAmount,
-        securityManagerTokenPolicyId,
-        securityManagerTokenAssetName,
+        redeemer.securityDatum,
       ),
     }
   }
 }
 
-fn validate_security_output(
-  securityManagerInput: Input,
+fn validate_security_manager_output(
+  ownPolicyId: PolicyId,
+  nftAssetName: AssetName,
   securityManagerOutput: Output,
-  transferAmount: Int,
-  securityManagerTokenPolicyId: PolicyId,
-  securityManagerTokenAssetName: AssetName,
+  securityDatum: SecurityDatum,
 ) {
-  expect InlineDatum(input_datum) = securityManagerInput.output.datum
-  expect parsedInputDatum: SecurityDatum = input_datum
   expect InlineDatum(output_datum) = securityManagerOutput.datum
   expect parsedOutputDatum: SecurityDatum = output_datum
 
-  let expectedDatum =
-    SecurityDatum {
-      securityInfo: parsedInputDatum.securityInfo,
-      securityPolicyId: parsedInputDatum.securityPolicyId,
-      securityAssetName: parsedInputDatum.securityAssetName,
-      issuerTokenPolicyId: parsedInputDatum.issuerTokenPolicyId,
-      issuerTokenAssetName: parsedInputDatum.issuerTokenAssetName,
-      remainingSecurityTokens: parsedInputDatum.remainingSecurityTokens - transferAmount,
-    }
-
   and {
-    parsedOutputDatum == expectedDatum,
-    quantity_of(
-      securityManagerOutput.value,
-      securityManagerTokenPolicyId,
-      securityManagerTokenAssetName,
-    ) == 1,
-    expectedDatum.remainingSecurityTokens >= 0,
+    parsedOutputDatum == securityDatum,
+    quantity_of(securityManagerOutput.value, ownPolicyId, nftAssetName) == 1,
     //dos protection
     length(flatten(securityManagerOutput.value)) <= 5,
   }

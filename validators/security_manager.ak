@@ -15,6 +15,7 @@ type Redeemer {
   issuerTokenRefInputIndex: Int,
 }
 
+//TODO Too much power to issuer? Do we want to at least enforce that the NFT goes back to this SC?
 validator(_version: Int) {
   fn spend(datum: SecurityDatum, redeemer: Redeemer, ctx: ScriptContext) {
     expect Some(issuerRefInput) =

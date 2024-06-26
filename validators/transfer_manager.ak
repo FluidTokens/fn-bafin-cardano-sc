@@ -7,16 +7,16 @@
 //This is what should be public to use this contract
 //[tokenPolicyId, tokenAssetName, userStatePolicyId, stateManagerAddress, transferManagerAddress]
 use aiken/hash.{Blake2b_224, Hash}
-use aiken/list.{length}
+use aiken/list.{foldl, length}
 use aiken/transaction.{
   InlineDatum, Input, Output, ScriptContext, Spend, WithdrawFrom,
 }
 use aiken/transaction/credential.{
   Address, Inline, Script, ScriptCredential, StakeCredential,
 }
-use aiken/transaction/value.{AssetName, PolicyId, flatten}
+use aiken/transaction/value.{AssetName, PolicyId, flatten, quantity_of}
 use common.{is_user_allowed}
-use types.{TransferDatum}
+use types.{LockedTransferDatum, TransferDatum}
 use utils.{
   get_inputs_from_sc, get_outputs_with_token, get_own_hash, is_output_to_sc,
   must_be_signed_by_stake_credential,
@@ -32,6 +32,20 @@ type Redeemer {
     //indexes in the reference input list, one for each output that receives tokens
     receiversNFTIndex: List<Int>,
   }
+  LockTokens {
+    //StakeCredential of the owner of the utxos that are being transferred
+    ownerStakeCredential: StakeCredential,
+    //index in the reference input list
+    ownerNFTIndex: Int,
+    //total tokens moved
+    totalTokens: Int,
+    //amount of tokens to lock
+    lockedTokens: Int,
+    //index in the output list that go to the locked_transfer_manager
+    lockingOutputIndex: Int,
+    //index in the output list that contains the change if any
+    changeOutputIndex: Int,
+  }
 }
 
 validator(
@@ -39,6 +53,7 @@ validator(
   securityTokenAssetName: AssetName,
   userStatePolicyId: PolicyId,
   userStateAssetName: AssetName,
+  lockedTransferManager: Hash<Blake2b_224, Script>,
 ) {
   fn validate(
     _datum: TransferDatum,
@@ -87,6 +102,48 @@ validator(
                 receiversNFTIndex,
                 userStatePolicyId,
                 userStateAssetName,
+              ),
+            }
+          }
+          LockTokens(
+            ownerStakeCredential,
+            ownerNFTIndex,
+            totalTokens,
+            lockedTokens,
+            lockingOutputIndex,
+            changeOutputIndex,
+          ) -> {
+            expect Inline(ScriptCredential(ownScriptHash)) =
+              withdrawStakeCredential
+            expect Some(userRefInput) =
+              list.at(ctx.transaction.reference_inputs, ownerNFTIndex)
+            and {
+              must_be_signed_by_stake_credential(
+                ctx.transaction,
+                ownerStakeCredential,
+              ),
+              validate_all_inputs_with_total(
+                ctx.transaction.inputs,
+                ownScriptHash,
+                securityTokenPolicyId,
+                securityTokenAssetName,
+                userRefInput,
+                ownerStakeCredential,
+                userStatePolicyId,
+                userStateAssetName,
+                totalTokens,
+              ),
+              validate_lock_and_change_outputs(
+                ctx.transaction.outputs,
+                ownScriptHash,
+                securityTokenPolicyId,
+                securityTokenAssetName,
+                totalTokens,
+                lockedTokens,
+                lockingOutputIndex,
+                changeOutputIndex,
+                lockedTransferManager,
+                ownerStakeCredential,
               ),
             }
           }
@@ -187,5 +244,104 @@ fn validate_all_outputs(
         }
       },
     ),
+  }
+}
+
+fn validate_all_inputs_with_total(
+  inputs: List<Input>,
+  accountScriptHash: Hash<Blake2b_224, Script>,
+  securityTokenPolicyId: PolicyId,
+  securityTokenAssetName: AssetName,
+  userRefInput: Input,
+  stakeCredential: StakeCredential,
+  userStatePolicyId: PolicyId,
+  userStateAssetName: AssetName,
+  totalTokens: Int,
+) {
+  let accountInputs = get_inputs_from_sc(inputs, accountScriptHash)
+  and {
+    validate_all_inputs(
+      inputs,
+      accountScriptHash,
+      userRefInput,
+      stakeCredential,
+      userStatePolicyId,
+      userStateAssetName,
+    ),
+    foldl(
+      accountInputs,
+      0,
+      fn(input, result) {
+        quantity_of(
+          input.output.value,
+          securityTokenPolicyId,
+          securityTokenAssetName,
+        ) + result
+      },
+    ) == totalTokens,
+  }
+}
+
+fn validate_lock_and_change_outputs(
+  outputs: List<Output>,
+  accountScriptHash: Hash<Blake2b_224, Script>,
+  securityTokenPolicyId: PolicyId,
+  securityTokenAssetName: AssetName,
+  totalTokens: Int,
+  lockedTokens: Int,
+  lockingOutputIndex: Int,
+  changeOutputIndex: Int,
+  lockedTransferManager: Hash<Blake2b_224, Script>,
+  stakeCredential: StakeCredential,
+) {
+  let change = totalTokens - lockedTokens
+
+  expect Some(lockingOutput) = list.at(outputs, lockingOutputIndex)
+  expect InlineDatum(locking_output_datum) = lockingOutput.datum
+  expect parsedLockingDatum: LockedTransferDatum = locking_output_datum
+
+  expect Some(changeOutput) = list.at(outputs, changeOutputIndex)
+  expect Some(changeOutputStakeCredential) =
+    changeOutput.address.stake_credential
+  expect InlineDatum(change_output_datum) = changeOutput.datum
+  expect parsedChangeDatum: TransferDatum = change_output_datum
+
+  let isLockingOutputValid = and {
+      is_output_to_sc(lockingOutput, lockedTransferManager),
+      parsedLockingDatum == LockedTransferDatum {
+        ownerStakeCredential: stakeCredential,
+        tranferManagerScriptHash: accountScriptHash,
+        tokenPolicyId: securityTokenPolicyId,
+        tokenAssetName: securityTokenAssetName,
+      },
+      quantity_of(
+        changeOutput.value,
+        securityTokenPolicyId,
+        securityTokenAssetName,
+      ) == lockedTokens,
+      //dos protection
+      length(flatten(lockingOutput.value)) <= 5,
+    }
+  let isChangeOutputValid = and {
+      is_output_to_sc(changeOutput, accountScriptHash),
+      changeOutputStakeCredential == stakeCredential,
+      parsedChangeDatum == TransferDatum { i: 0 },
+      quantity_of(
+        changeOutput.value,
+        securityTokenPolicyId,
+        securityTokenAssetName,
+      ) == change,
+      //dos protection
+      length(flatten(changeOutput.value)) <= 5,
+    }
+  and {
+    isLockingOutputValid,
+    or {
+      change == 0,
+      and {
+        change > 0,
+        isChangeOutputValid,
+      },
+    },
   }
 }
