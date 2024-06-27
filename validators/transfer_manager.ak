@@ -37,8 +37,6 @@ type Redeemer {
     ownerStakeCredential: StakeCredential,
     //index in the reference input list
     ownerNFTIndex: Int,
-    //total tokens moved
-    totalTokens: Int,
     //amount of tokens to lock
     lockedTokens: Int,
     //index in the output list that go to the locked_transfer_manager
@@ -108,7 +106,6 @@ validator(
           LockTokens(
             ownerStakeCredential,
             ownerNFTIndex,
-            totalTokens,
             lockedTokens,
             lockingOutputIndex,
             changeOutputIndex,
@@ -117,28 +114,40 @@ validator(
               withdrawStakeCredential
             expect Some(userRefInput) =
               list.at(ctx.transaction.reference_inputs, ownerNFTIndex)
+            //only inputs from account
+            let accountInputs =
+              get_inputs_from_sc(ctx.transaction.inputs, ownScriptHash)
+            let actualTotalTokens =
+              foldl(
+                accountInputs,
+                0,
+                fn(input, result) {
+                  quantity_of(
+                    input.output.value,
+                    securityTokenPolicyId,
+                    securityTokenAssetName,
+                  ) + result
+                },
+              )
             and {
               must_be_signed_by_stake_credential(
                 ctx.transaction,
                 ownerStakeCredential,
               ),
-              validate_all_inputs_with_total(
+              validate_all_inputs(
                 ctx.transaction.inputs,
                 ownScriptHash,
-                securityTokenPolicyId,
-                securityTokenAssetName,
                 userRefInput,
                 ownerStakeCredential,
                 userStatePolicyId,
                 userStateAssetName,
-                totalTokens,
               ),
               validate_lock_and_change_outputs(
                 ctx.transaction.outputs,
                 ownScriptHash,
                 securityTokenPolicyId,
                 securityTokenAssetName,
-                totalTokens,
+                actualTotalTokens,
                 lockedTokens,
                 lockingOutputIndex,
                 changeOutputIndex,
@@ -247,54 +256,19 @@ fn validate_all_outputs(
   }
 }
 
-fn validate_all_inputs_with_total(
-  inputs: List<Input>,
-  accountScriptHash: Hash<Blake2b_224, Script>,
-  securityTokenPolicyId: PolicyId,
-  securityTokenAssetName: AssetName,
-  userRefInput: Input,
-  stakeCredential: StakeCredential,
-  userStatePolicyId: PolicyId,
-  userStateAssetName: AssetName,
-  totalTokens: Int,
-) {
-  let accountInputs = get_inputs_from_sc(inputs, accountScriptHash)
-  and {
-    validate_all_inputs(
-      inputs,
-      accountScriptHash,
-      userRefInput,
-      stakeCredential,
-      userStatePolicyId,
-      userStateAssetName,
-    ),
-    foldl(
-      accountInputs,
-      0,
-      fn(input, result) {
-        quantity_of(
-          input.output.value,
-          securityTokenPolicyId,
-          securityTokenAssetName,
-        ) + result
-      },
-    ) == totalTokens,
-  }
-}
-
 fn validate_lock_and_change_outputs(
   outputs: List<Output>,
   accountScriptHash: Hash<Blake2b_224, Script>,
   securityTokenPolicyId: PolicyId,
   securityTokenAssetName: AssetName,
-  totalTokens: Int,
+  actualTotalTokens: Int,
   lockedTokens: Int,
   lockingOutputIndex: Int,
   changeOutputIndex: Int,
   lockedTransferManager: Hash<Blake2b_224, Script>,
   stakeCredential: StakeCredential,
 ) {
-  let change = totalTokens - lockedTokens
+  let change = actualTotalTokens - lockedTokens
 
   expect Some(lockingOutput) = list.at(outputs, lockingOutputIndex)
   expect InlineDatum(locking_output_datum) = lockingOutput.datum

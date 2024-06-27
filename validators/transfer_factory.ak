@@ -1,3 +1,4 @@
+use aiken/hash.{Blake2b_224, Hash}
 //Each instance of this SC produces a certain type of security tokens, authorized by the issuer and always sent to the
 //correct transfer_manager instance.
 //The tokens minted here must NEVER leave the transfer_manager instance.
@@ -5,13 +6,13 @@
 //Issuer cannot mint more than the max amount written in the security manager utxo.
 use aiken/list.{length}
 use aiken/transaction.{InlineDatum, Input, Mint, Output, ScriptContext}
-use aiken/transaction/credential.{StakeCredential}
+use aiken/transaction/credential.{Script, StakeCredential}
 use aiken/transaction/value.{
   AssetName, PolicyId, flatten, from_minted_value, quantity_of,
 }
 use common.{is_user_allowed}
 use types.{SecurityDatum}
-use utils.{must_be_signed_by_stake_credential}
+use utils.{is_output_to_sc, must_be_signed_by_stake_credential}
 
 type Redeemer {
   issuerStakeCredential: StakeCredential,
@@ -28,6 +29,7 @@ validator(
   issuerTokenAssetName: AssetName,
   securityManagerTokenPolicyId: PolicyId,
   securityManagerTokenAssetName: AssetName,
+  securityManagerScriptHash: Hash<Blake2b_224, Script>,
 ) {
   fn minter(redeemer: Redeemer, ctx: ScriptContext) {
     expect Mint(ownPolicyId) = ctx.purpose
@@ -69,6 +71,7 @@ validator(
         redeemer.transferAmount,
         securityManagerTokenPolicyId,
         securityManagerTokenAssetName,
+        securityManagerScriptHash,
       ),
     }
   }
@@ -80,6 +83,7 @@ fn validate_security_output(
   transferAmount: Int,
   securityManagerTokenPolicyId: PolicyId,
   securityManagerTokenAssetName: AssetName,
+  securityManagerScriptHash: Hash<Blake2b_224, Script>,
 ) {
   expect InlineDatum(input_datum) = securityManagerInput.output.datum
   expect parsedInputDatum: SecurityDatum = input_datum
@@ -97,6 +101,7 @@ fn validate_security_output(
     }
 
   and {
+    is_output_to_sc(securityManagerOutput, securityManagerScriptHash),
     parsedOutputDatum == expectedDatum,
     quantity_of(
       securityManagerOutput.value,

@@ -1,11 +1,13 @@
 //This SC receives security tokens that must be locked.
 //Only the custodialAdmin can unlock them and send them back to a user
 use aiken/hash.{Blake2b_224, Hash}
-use aiken/list.{foldl}
-use aiken/transaction.{Input, Output, ScriptContext, Spend, WithdrawFrom}
+use aiken/list.{foldl, length}
+use aiken/transaction.{
+  InlineDatum, Input, Output, ScriptContext, Spend, WithdrawFrom,
+}
 use aiken/transaction/credential.{Address, Inline, Script, ScriptCredential}
-use aiken/transaction/value.{AssetName, PolicyId, quantity_of}
-use types.{LockedTransferDatum}
+use aiken/transaction/value.{AssetName, PolicyId, flatten, quantity_of}
+use types.{LockedTransferDatum, TransferDatum}
 use utils.{
   get_inputs_from_sc, get_outputs_to_sc, get_own_hash, must_be_signed_by,
 }
@@ -71,6 +73,17 @@ fn areAllInputTokensToTransferManager(
       outputsToTransferManager,
       0,
       fn(output, result) {
+        let output_datum_dos_checks = {
+          expect InlineDatum(output_datum) = output.datum
+          expect parsedOutputDatum: TransferDatum = output_datum
+          and {
+            parsedOutputDatum == TransferDatum { i: 0 },
+            //dos protection
+            length(flatten(output.value)) <= 5,
+          }
+        }
+        //Throw error if datum and dos are not valid
+        expect output_datum_dos_checks
         quantity_of(output.value, tokenPolicyId, tokenAssetName) + result
       },
     )
