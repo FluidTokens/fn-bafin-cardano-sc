@@ -1,19 +1,9 @@
-use aiken/builtin
 use aiken/collection/dict
 use aiken/collection/list.{length}
-use aiken/collection/pairs
-use aiken/crypto.{Blake2b_224, Hash, VerificationKeyHash}
-use aiken/interval.{Finite}
-use aiken/math/rational.{Rational}
-use cardano/address.{
-  Address, Credential, Inline, Script, StakeCredential, VerificationKey,
-}
-use cardano/assets.{
-  AssetName, PolicyId, Value, policies, quantity_of, to_dict, tokens,
-}
-use cardano/transaction.{
-  Input, Output, OutputReference, ScriptPurpose, Spend, Transaction,
-}
+use aiken/crypto.{VerificationKeyHash}
+use cardano/address.{Address, Inline, Script, StakeCredential, VerificationKey}
+use cardano/assets.{AssetName, PolicyId, Value, quantity_of, to_dict, tokens}
+use cardano/transaction.{Input, Output, OutputReference, Transaction}
 
 pub fn must_be_signed_by_stake_credential(
   transaction: Transaction,

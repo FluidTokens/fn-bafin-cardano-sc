@@ -27,13 +27,37 @@ pub type SecurityInfo {
   tokenCustodian: ByteArray,
 }
 
-pub type SecurityDatum {
+pub type SecurityInfoDatum {
   securityInfo: SecurityInfo,
+  issuerTokenAssetName: AssetName,
   securityPolicyId: PolicyId,
   securityAssetName: AssetName,
-  issuerTokenPolicyId: PolicyId,
-  issuerTokenAssetName: AssetName,
   remainingSecurityTokens: Int,
+}
+
+pub type SecurityInfoMintRedeemer {
+  securityInfoOutputIndex: Int,
+}
+
+pub type SecurityInfoSpendRedeemer {
+  issuerTokenRefInputIndex: Int,
+  issuerStakeCredential: StakeCredential,
+  currentSecurityInfoIndex: Int,
+}
+
+pub type AdminManagerDatum {
+  issuerAssetName: AssetName,
+}
+
+pub type AdminManagerMintRedeemer {
+  issuerStakeCredential: StakeCredential,
+  issuerRefInputIndex: Int,
+  adminManagerOutputIndex: Int,
+}
+
+pub type AdminManagerSpendRedeemer {
+  issuerStakeCredential: StakeCredential,
+  issuerRefInputIndex: Int,
 }
 
 pub type StateManagerDatum {
@@ -47,7 +71,8 @@ pub type StateManagerMintRedeemer {
 }
 
 pub type StateManagerSpendRedeemer {
-  StateManagerSpendRedeemer
+  adminStakeCredential: StakeCredential,
+  adminTokenRefInputIndex: Int,
 }
 
 pub type TransferManagerMintRedeemer {
@@ -91,4 +116,13 @@ pub type LockedTransferDatum {
   tranferManagerScriptHash: Hash<Blake2b_224, VerificationKey>,
   tokenPolicyId: PolicyId,
   tokenAssetName: AssetName,
+}
+
+pub type LockedTransferManagerSpendRedeemer {
+  withdrawIndex: Int,
+}
+
+pub type LockedTransferManagerWithdrawRedeemer {
+  tranferManagerScriptHash: ByteArray,
+  securityAssetName: AssetName,
 }
