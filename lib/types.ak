@@ -1,6 +1,6 @@
-use aiken/hash.{Blake2b_224, Hash}
-use aiken/transaction/credential.{Script, StakeCredential}
-use aiken/transaction/value.{AssetName, PolicyId}
+use aiken/crypto.{Blake2b_224, Hash, VerificationKey}
+use cardano/address.{Credential, StakeCredential}
+use cardano/assets.{AssetName, PolicyId}
 
 pub type SecurityInfo {
   isin: ByteArray,
@@ -36,13 +36,59 @@ pub type SecurityDatum {
   remainingSecurityTokens: Int,
 }
 
-pub type TransferDatum {
-  i: Int,
+pub type StateManagerDatum {
+  credentials: Credential,
+}
+
+pub type StateManagerMintRedeemer {
+  adminStakeCredential: StakeCredential,
+  adminTokenRefInputIndex: Int,
+  stateManagerOutputIndex: Int,
+}
+
+pub type StateManagerSpendRedeemer {
+  StateManagerSpendRedeemer
+}
+
+pub type TransferManagerMintRedeemer {
+  issuerStakeCredential: StakeCredential,
+  issuerTokenRefInputIndex: Int,
+  transferManagerOutputIndex: Int,
+  transferAmount: Int,
+}
+
+pub type TransferManagerSpendRedeemer {
+  withdrawIndex: Int,
+}
+
+pub type TransferManagerWithdrawRedeemer {
+  Transfer {
+    //StakeCredential of the owner of the utxos that are being transferred
+    ownerStakeCredential: StakeCredential,
+    //index in the reference input list
+    ownerNFTIndex: Int,
+    //indexes in the reference input list, one for each output that receives tokens
+    receiversNFTIndex: List<Int>,
+  }
+  LockTokens {
+    //StakeCredential of the owner of the utxos that are being transferred
+    adminStakeCredential: StakeCredential,
+    //index in the reference input list
+    adminRefInputIndex: Int,
+    //amount of tokens to lock
+    lockedTokensAmount: Int,
+    //index in the output list that go to the locked_transfer_manager
+    lockingOutputIndex: Int,
+    //index in the output list that contains the change if any
+    changeOutputIndex: Int,
+    //StakeCredential of the last user that was owning these tokens
+    lastUserStakeCredential: StakeCredential,
+  }
 }
 
 pub type LockedTransferDatum {
   ownerStakeCredential: StakeCredential,
-  tranferManagerScriptHash: Hash<Blake2b_224, Script>,
+  tranferManagerScriptHash: Hash<Blake2b_224, VerificationKey>,
   tokenPolicyId: PolicyId,
   tokenAssetName: AssetName,
 }

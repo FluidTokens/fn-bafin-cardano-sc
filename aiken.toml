@@ -1,5 +1,7 @@
 name = "ft/bafin"
 version = "0.0.0"
+compiler = "v1.1.0"
+plutus = "v3"
 license = "Apache-2.0"
 description = "Aiken contracts for project 'ft/bafin'"
 
@@ -10,5 +12,7 @@ platform = "github"
 
 [[dependencies]]
 name = "aiken-lang/stdlib"
-version = "1.9.0"
+version = "v2.0.0"
 source = "github"
+
+[config]
