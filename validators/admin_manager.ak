@@ -1,8 +1,7 @@
-use aiken/collection/dict.{keys}
 use aiken/collection/list.{length}
 use aiken/crypto.{sha2_256}
 use aiken/primitive/bytearray
-use cardano/assets.{AssetName, PolicyId, flatten, quantity_of}
+use cardano/assets.{PolicyId, flatten, quantity_of}
 use cardano/transaction.{Output, OutputReference, Transaction}
 use common.{input_contains_any_token_with_policy_id, is_user_allowed}
 use types.{
@@ -42,20 +41,21 @@ validator admin_manager(issuerManagerHash: ByteArray) {
   }
 
   spend(
-    _datumOpt: Option<AdminManagerDatum>,
+    datumOpt: Option<AdminManagerDatum>,
     redeemer: AdminManagerSpendRedeemer,
     _input: OutputReference,
     self: Transaction,
   ) {
     expect Some(issuerRefInput) =
       list.at(self.reference_inputs, redeemer.issuerRefInputIndex)
+    expect Some(datum) = datumOpt
     and {
       must_be_signed_by_stake_credential(self, redeemer.issuerStakeCredential),
       is_user_allowed(
         issuerRefInput,
         redeemer.issuerStakeCredential,
         issuerManagerHash,
-        issuerAssetName,
+        datum.issuerAssetName,
       ),
     }
   }

@@ -28,8 +28,6 @@ validator transfer_manager(
   adminManagerHash: PolicyId,
   adminAssetName: AssetName,
   stateManagerHash: PolicyId,
-  stateAssetName: AssetName,
-  securityAssetName: AssetName,
   lockedTransferManagerHash: ByteArray,
 ) {
   mint(
@@ -37,6 +35,7 @@ validator transfer_manager(
     policy_id: PolicyId,
     self: Transaction,
   ) {
+    let securityAssetName = adminAssetName
     expect Some(issuerRefInput) =
       list.at(self.reference_inputs, redeemer.issuerTokenRefInputIndex)
     expect Some(transferManagerOutput) =
@@ -77,6 +76,8 @@ validator transfer_manager(
     credential: Credential,
     self: Transaction,
   ) {
+    let stateAssetName = adminAssetName
+    let securityAssetName = adminAssetName
     expect Script(ownScriptHash) = credential
     when redeemer is {
       Transfer(ownerStakeCredential, ownerNFTIndex, receiversNFTIndex) -> {

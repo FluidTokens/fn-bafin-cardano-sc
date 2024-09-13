@@ -1,12 +1,14 @@
-//There is an instance of this SC for each admin token (PolicyId+AssetName), which also means there's an instance of this SC
-//for each type of security tokens.
-//This SC produces user status tokens that must never leave this SC.
+//There is an instance of this SC for each admin token (PolicyId+AssetName).
+//This SC produces user state tokens that should never leave this SC.
 //The token AssetName is the same of adminAssetName.
+//If there's a utxo with user stakeCredentials it means the user can send and receive the security.
 use aiken/collection/list.{length}
 use cardano/assets.{AssetName, PolicyId, flatten, quantity_of}
 use cardano/transaction.{Output, OutputReference, Transaction}
 use common.{is_user_allowed}
-use types.{StateManagerMintRedeemer, StateManagerSpendRedeemer}
+use types.{
+  StateManagerDatum, StateManagerMintRedeemer, StateManagerSpendRedeemer,
+}
 use utils.{is_output_to_sc, must_be_signed_by_stake_credential}
 
 validator state_manager(adminManagerHash: PolicyId, adminAssetName: AssetName) {
@@ -35,7 +37,7 @@ validator state_manager(adminManagerHash: PolicyId, adminAssetName: AssetName) {
   }
 
   spend(
-    _datumOpt: Option<Data>,
+    _datumOpt: Option<StateManagerDatum>,
     redeemer: StateManagerSpendRedeemer,
     _input: OutputReference,
     self: Transaction,

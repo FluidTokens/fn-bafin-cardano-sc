@@ -37,8 +37,6 @@ validator locked_transfer_manager(custodialAdminAddress: Address) {
         self.inputs,
         self.outputs,
         ownScriptHash,
-        redeemer.tranferManagerScriptHash,
-        redeemer.securityAssetName,
       ),
     }
   }

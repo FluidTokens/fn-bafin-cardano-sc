@@ -60,8 +60,13 @@ pub type AdminManagerSpendRedeemer {
   issuerRefInputIndex: Int,
 }
 
+pub type StateManagerData {
+  adminAssetName: AssetName,
+}
+
 pub type StateManagerDatum {
   credentials: Credential,
+  data: StateManagerData,
 }
 
 pub type StateManagerMintRedeemer {
