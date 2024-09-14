@@ -1,3 +1,6 @@
+//There is an instance of this SC for each issuer.
+//This SC produces admin tokens that should never leave this SC.
+//If there's a utxo with user stakeCredentials it means the user is an admin for that issuer's security.
 use aiken/collection/list.{length}
 use aiken/crypto.{sha2_256}
 use aiken/primitive/bytearray

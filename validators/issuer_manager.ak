@@ -9,6 +9,9 @@
 //An admin can freeze a user changing stakeCredentials of his state utxo.
 //An admin can lock user's securities sending them in a utxo to locked_transfer_manager. 
 //An admin can lock user's securities and give them to anyone sending them in a utxo to transfer_manager. 
+
+//For each security, there's 1 issuer utxo, 1 security_info utxo, 1 admin utxo, 1 state_manager SC instance and 1 transfer_manager SC instance.
+//Only 1 locked_transfer_manager SC exists for all the securities, the utxo datum specifies where the securities are coming from.
 use cardano/address.{Address}
 use cardano/assets.{PolicyId}
 use cardano/transaction.{OutputReference, Transaction}

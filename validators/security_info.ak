@@ -1,3 +1,6 @@
+//There is an instance of this SC for each real world security.
+//This SC produces a utxo with a NFT that should never leave this SC.
+//The datum contains the security information.
 use aiken/collection/dict.{keys}
 use aiken/collection/list.{length}
 use aiken/crypto.{sha2_256}

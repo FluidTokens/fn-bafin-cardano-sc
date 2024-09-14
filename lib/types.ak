@@ -119,7 +119,6 @@ pub type TransferManagerWithdrawRedeemer {
 pub type LockedTransferDatum {
   ownerStakeCredential: StakeCredential,
   tranferManagerScriptHash: Hash<Blake2b_224, VerificationKey>,
-  tokenPolicyId: PolicyId,
   tokenAssetName: AssetName,
 }
 
@@ -129,5 +128,10 @@ pub type LockedTransferManagerSpendRedeemer {
 
 pub type LockedTransferManagerWithdrawRedeemer {
   tranferManagerScriptHash: ByteArray,
-  securityAssetName: AssetName,
+  tokenAssetName: AssetName,
+  unlockedTokensAmount: Int,
+  unlockingOutputIndex: Int,
+  changeOutputIndex: Int,
+  newUserStakeCredential: StakeCredential,
+  changeUserStakeCredential: StakeCredential,
 }

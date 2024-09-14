@@ -17,6 +17,7 @@ validator state_manager(adminManagerHash: PolicyId, adminAssetName: AssetName) {
     policy_id: PolicyId,
     self: Transaction,
   ) {
+    let stateAssetName = adminAssetName
     expect Some(adminRefInput) =
       list.at(self.reference_inputs, redeemer.adminTokenRefInputIndex)
     expect Some(stateManagerOutput) =
@@ -29,8 +30,8 @@ validator state_manager(adminManagerHash: PolicyId, adminAssetName: AssetName) {
         adminManagerHash,
         adminAssetName,
       ),
-      quantity_of(self.mint, policy_id, adminAssetName) == 1,
-      quantity_of(stateManagerOutput.value, policy_id, adminAssetName) == 1,
+      quantity_of(self.mint, policy_id, stateAssetName) == 1,
+      quantity_of(stateManagerOutput.value, policy_id, stateAssetName) == 1,
       is_output_to_sc(stateManagerOutput, policy_id),
       length(flatten(stateManagerOutput.value)) <= 21,
     }

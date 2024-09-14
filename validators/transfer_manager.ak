@@ -1,11 +1,7 @@
-//Each instance of this SC contains one type of security tokens of all users, where each utxo has the user's stake_credential.
+//There is an instance of this SC for each state_manager instance, so one for each admin token (PolicyId+AssetName).
+//Each utxo has the securities owner's stake_credential.
 //The user is authorized to spend or receive the security tokens only if the state_manager has an utxo with
 //a valid state token issued by the issuer and with the user's stake_credential.
-//The security token has PolicyId and AssetName of transfer_factory.
-//The user state token has PolicyId and AssetName of state_factory.
-
-//This is what should be public to use this contract
-//[tokenPolicyId, tokenAssetName, userStatePolicyId, stateManagerAddress, transferManagerAddress]
 use aiken/collection/list.{foldl, length}
 use cardano/address.{Address, Credential, Script, StakeCredential}
 use cardano/assets.{AssetName, PolicyId, flatten, quantity_of}
@@ -272,11 +268,10 @@ fn validate_lock_and_change_outputs(
       parsedLockingDatum == LockedTransferDatum {
         ownerStakeCredential: lastUserStakeCredential,
         tranferManagerScriptHash: transferManagerScriptHash,
-        tokenPolicyId: transferManagerScriptHash,
         tokenAssetName: securityTokenAssetName,
       },
       quantity_of(
-        changeOutput.value,
+        lockingOutput.value,
         transferManagerScriptHash,
         securityTokenAssetName,
       ) == lockedTokensAmount,
