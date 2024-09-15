@@ -95,6 +95,7 @@ fn validate_unlock_and_change_outputs(
   expect changeLockingDatum: LockedTransferDatum = change_output_datum
 
   let isUnlockingOutputValid = and {
+      //We don't check the datum because we don't use it but it exists to be CIP-113 compliant
       is_output_to_sc(unlockingOutput, transferManagerScriptHash),
       unlockingOutputStakeCredential == newUserStakeCredential,
       quantity_of(

@@ -80,6 +80,11 @@ pub type StateManagerSpendRedeemer {
   adminTokenRefInputIndex: Int,
 }
 
+pub type TransferManagerDatum {
+  userStateAssetName: AssetName,
+  data: Option<Data>,
+}
+
 pub type TransferManagerMintRedeemer {
   issuerStakeCredential: StakeCredential,
   issuerTokenRefInputIndex: Int,
@@ -91,14 +96,20 @@ pub type TransferManagerSpendRedeemer {
   withdrawIndex: Int,
 }
 
+pub type TransferOutput {
+  credential: Credential,
+  amount: Int,
+  receiverStateIndex: Int,
+}
+
 pub type TransferManagerWithdrawRedeemer {
   Transfer {
+    outputsDetails: List<TransferOutput>,
+    firstOutputIndex: Int,
+    totalInputAmount: Int,
+    ownerStateIndex: Int,
     //StakeCredential of the owner of the utxos that are being transferred
     ownerStakeCredential: StakeCredential,
-    //index in the reference input list
-    ownerNFTIndex: Int,
-    //indexes in the reference input list, one for each output that receives tokens
-    receiversNFTIndex: List<Int>,
   }
   LockTokens {
     //StakeCredential of the owner of the utxos that are being transferred

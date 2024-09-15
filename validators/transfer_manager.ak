@@ -3,15 +3,16 @@
 //The user is authorized to spend or receive the security tokens only if the state_manager has an utxo with
 //a valid state token issued by the issuer and with the user's stake_credential.
 use aiken/collection/list.{foldl, length}
-use cardano/address.{Address, Credential, Script, StakeCredential}
+use cardano/address.{Address, Credential, Inline, Script, StakeCredential}
 use cardano/assets.{AssetName, PolicyId, flatten, quantity_of}
 use cardano/transaction.{
   InlineDatum, Input, Output, OutputReference, Transaction,
 }
 use common.{is_user_allowed}
 use types.{
-  LockTokens, LockedTransferDatum, Transfer, TransferManagerMintRedeemer,
-  TransferManagerSpendRedeemer, TransferManagerWithdrawRedeemer,
+  LockTokens, LockedTransferDatum, StateManagerDatum, Transfer,
+  TransferManagerDatum, TransferManagerMintRedeemer,
+  TransferManagerSpendRedeemer, TransferManagerWithdrawRedeemer, TransferOutput,
 }
 use utils.{
   get_inputs_from_sc, get_outputs_with_token, get_own_hash, is_output_to_sc,
@@ -37,6 +38,7 @@ validator transfer_manager(
     expect Some(transferManagerOutput) =
       list.at(self.outputs, redeemer.transferManagerOutputIndex)
     and {
+      //We don't check the datum because we don't use it but it exists to be CIP-113 compliant
       must_be_signed_by_stake_credential(self, redeemer.issuerStakeCredential),
       is_user_allowed(
         issuerRefInput,
@@ -53,7 +55,7 @@ validator transfer_manager(
   }
 
   spend(
-    _datumOpt: Option<Data>,
+    _datumOpt: Option<TransferManagerDatum>,
     redeemer: TransferManagerSpendRedeemer,
     input: OutputReference,
     self: Transaction,
@@ -76,25 +78,36 @@ validator transfer_manager(
     let securityAssetName = adminAssetName
     expect Script(ownScriptHash) = credential
     when redeemer is {
-      Transfer(ownerStakeCredential, ownerNFTIndex, receiversNFTIndex) -> {
+      Transfer(
+        outputsDetails,
+        firstOutputIndex,
+        totalInputAmount,
+        ownerStateIndex,
+        ownerStakeCredential,
+      ) -> {
         expect Some(userRefInput) =
-          list.at(self.reference_inputs, ownerNFTIndex)
-        and {
-          must_be_signed_by_stake_credential(self, ownerStakeCredential),
-          validate_all_inputs(
+          list.at(self.reference_inputs, ownerStateIndex)
+        let actualInputTotalAmount =
+          validate_all_inputs_and_get_total_amount(
             self.inputs,
             ownScriptHash,
+            securityAssetName,
             userRefInput,
             ownerStakeCredential,
             stateManagerHash,
             stateAssetName,
-          ),
+          )
+        and {
+          must_be_signed_by_stake_credential(self, ownerStakeCredential),
+          totalInputAmount == actualInputTotalAmount,
           validate_all_outputs(
             self.reference_inputs,
             self.outputs,
             ownScriptHash,
             securityAssetName,
-            receiversNFTIndex,
+            firstOutputIndex,
+            outputsDetails,
+            actualInputTotalAmount,
             stateManagerHash,
             stateAssetName,
           ),
@@ -154,35 +167,40 @@ validator transfer_manager(
   }
 }
 
-fn validate_all_inputs(
+fn validate_all_inputs_and_get_total_amount(
   inputs: List<Input>,
   transferManagerScriptHash: ByteArray,
+  securityAssetName: AssetName,
   userRefInput: Input,
   userStakeCredential: StakeCredential,
   stateManagerHash: PolicyId,
   userStateAssetName: AssetName,
 ) {
   //only inputs from account
-  let transferManagerInputs =
-    get_inputs_from_sc(inputs, transferManagerScriptHash)
-  and {
-    //user must be allowed to transfer
-    is_user_allowed(
-      userRefInput,
-      userStakeCredential,
-      stateManagerHash,
-      userStateAssetName,
-    ),
-    //all inputs must belong to this user
-    list.all(
-      transferManagerInputs,
-      fn(input) {
+  let inputFromThisSC = get_inputs_from_sc(inputs, transferManagerScriptHash)
+  expect InlineDatum(user_state_datum) = userRefInput.output.datum
+  expect userStateDatum: StateManagerDatum = user_state_datum
+  expect Inline(userStateDatumStakeCredentials) = userStateDatum.credentials
+
+  expect
+    quantity_of(userRefInput.output.value, stateManagerHash, userStateAssetName) > 0
+  let tokensAmountFromThisSC =
+    foldl(
+      inputFromThisSC,
+      0,
+      fn(input, result) {
         expect Some(inputStakeCredential) =
           input.output.address.stake_credential
-        inputStakeCredential == userStakeCredential
+        expect inputStakeCredential == userStateDatumStakeCredentials
+        quantity_of(
+          input.output.value,
+          transferManagerScriptHash,
+          securityAssetName,
+        ) + result
       },
-    ),
-  }
+    )
+
+  tokensAmountFromThisSC
 }
 
 fn validate_all_outputs(
@@ -190,10 +208,16 @@ fn validate_all_outputs(
   outputs: List<Output>,
   transferManagerScriptHash: ByteArray,
   securityAssetName: AssetName,
-  receiversNFTIndex: List<Int>,
+  firstOutputIndex: Int,
+  outputsDetails: List<TransferOutput>,
+  actualInputTotalAmount: Int,
   stateManagerHash: PolicyId,
   userStateAssetName: AssetName,
 ) {
+  //TODO Validazione somma input == totale in output
+  //TODO Get outputs con drop
+  //TODO Controlla stateManager datum di ogni output
+
   let outputsWithThisToken =
     get_outputs_with_token(
       outputs,
@@ -205,6 +229,7 @@ fn validate_all_outputs(
     list.zip(outputsWithThisToken, receiversNFTIndex)
 
   and {
+    //We don't check the datum because we don't use it but it exists to be CIP-113 compliant
     length(outputsWithThisToken) == length(receiversNFTIndex),
     list.all(
       outputsAndRefInputIndexes,

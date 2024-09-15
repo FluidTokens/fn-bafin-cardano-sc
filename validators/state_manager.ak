@@ -1,7 +1,7 @@
 //There is an instance of this SC for each admin token (PolicyId+AssetName).
 //This SC produces user state tokens that should never leave this SC.
 //The token AssetName is the same of adminAssetName.
-//If there's a utxo with user stakeCredentials it means the user can send and receive the security.
+//If there's a utxo with user stakeCredentials in the datum, it means the user can send and receive the security.
 use aiken/collection/list.{length}
 use cardano/assets.{AssetName, PolicyId, flatten, quantity_of}
 use cardano/transaction.{Output, OutputReference, Transaction}
