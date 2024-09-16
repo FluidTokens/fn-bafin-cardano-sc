@@ -33,7 +33,8 @@ Only 1 locked_transfer_manager SC exists for all the securities, the utxo datum 
 
 Following CIP-113, the security tokens can move only inside the transfer_manager and the locked_transfer_manager SCs.
 
-To check if a issuer, an admin or a user is enabled and legit, there must be a utxo in the proper SC with the proper NFT and with the user stakeCredentials.
+To check if a issuer or an admin is enabled and legit, there must be a utxo in the proper SC with the proper NFT and with the user stakeCredentials.
+To check if a user is enabled and legit, there must be a utxo in the state_manager SC with a NFT and the user's stakeCredentials in the datum.
 To invalidate a issuer, an admin or a user, you just need to spend his utxo and remove his stakeCredentials.
 
 ## Authors

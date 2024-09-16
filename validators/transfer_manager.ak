@@ -15,7 +15,7 @@ use types.{
   TransferManagerSpendRedeemer, TransferManagerWithdrawRedeemer, TransferOutput,
 }
 use utils.{
-  get_inputs_from_sc, get_outputs_with_token, get_own_hash, is_output_to_sc,
+  get_inputs_from_sc, get_own_hash, is_output_to_sc,
   must_be_signed_by_stake_credential,
 }
 
@@ -93,19 +93,18 @@ validator transfer_manager(
             ownScriptHash,
             securityAssetName,
             userRefInput,
-            ownerStakeCredential,
             stateManagerHash,
             stateAssetName,
           )
+        let outputsToThisSC = list.drop(self.outputs, firstOutputIndex)
         and {
           must_be_signed_by_stake_credential(self, ownerStakeCredential),
           totalInputAmount == actualInputTotalAmount,
           validate_all_outputs(
             self.reference_inputs,
-            self.outputs,
+            outputsToThisSC,
             ownScriptHash,
             securityAssetName,
-            firstOutputIndex,
             outputsDetails,
             actualInputTotalAmount,
             stateManagerHash,
@@ -172,7 +171,6 @@ fn validate_all_inputs_and_get_total_amount(
   transferManagerScriptHash: ByteArray,
   securityAssetName: AssetName,
   userRefInput: Input,
-  userStakeCredential: StakeCredential,
   stateManagerHash: PolicyId,
   userStateAssetName: AssetName,
 ) {
@@ -180,7 +178,6 @@ fn validate_all_inputs_and_get_total_amount(
   let inputFromThisSC = get_inputs_from_sc(inputs, transferManagerScriptHash)
   expect InlineDatum(user_state_datum) = userRefInput.output.datum
   expect userStateDatum: StateManagerDatum = user_state_datum
-  expect Inline(userStateDatumStakeCredentials) = userStateDatum.credentials
 
   expect
     quantity_of(userRefInput.output.value, stateManagerHash, userStateAssetName) > 0
@@ -191,7 +188,8 @@ fn validate_all_inputs_and_get_total_amount(
       fn(input, result) {
         expect Some(inputStakeCredential) =
           input.output.address.stake_credential
-        expect inputStakeCredential == userStateDatumStakeCredentials
+        expect Inline(inputCredential) = inputStakeCredential
+        expect inputCredential == userStateDatum.credential
         quantity_of(
           input.output.value,
           transferManagerScriptHash,
@@ -205,53 +203,52 @@ fn validate_all_inputs_and_get_total_amount(
 
 fn validate_all_outputs(
   referenceInputs: List<Input>,
-  outputs: List<Output>,
+  outputsToThisSC: List<Output>,
   transferManagerScriptHash: ByteArray,
   securityAssetName: AssetName,
-  firstOutputIndex: Int,
   outputsDetails: List<TransferOutput>,
   actualInputTotalAmount: Int,
   stateManagerHash: PolicyId,
   userStateAssetName: AssetName,
 ) {
-  //TODO Validazione somma input == totale in output
-  //TODO Get outputs con drop
-  //TODO Controlla stateManager datum di ogni output
+  let totalTokensInOutput =
+    list.indexed_foldr(
+      outputsToThisSC,
+      0,
+      fn(index, output, result) {
+        expect Some(outputDetails) = list.at(outputsDetails, index)
+        expect Some(outputStakeCredential) = output.address.stake_credential
+        expect Inline(outputCredential) = outputStakeCredential
+        expect Some(receiverStateRefInput) =
+          list.at(referenceInputs, outputDetails.receiverStateIndex)
+        expect InlineDatum(receiver_state_datum) =
+          receiverStateRefInput.output.datum
+        expect receiverStateDatum: StateManagerDatum = receiver_state_datum
 
-  let outputsWithThisToken =
-    get_outputs_with_token(
-      outputs,
-      transferManagerScriptHash,
-      securityAssetName,
+        let securityTokenInOutput =
+          quantity_of(
+            output.value,
+            transferManagerScriptHash,
+            securityAssetName,
+          )
+        expect and {
+            quantity_of(
+              receiverStateRefInput.output.value,
+              stateManagerHash,
+              userStateAssetName,
+            ) > 0,
+            outputCredential == outputDetails.credential,
+            outputCredential == receiverStateDatum.credential,
+            securityTokenInOutput == outputDetails.amount,
+            is_output_to_sc(output, transferManagerScriptHash),
+            //dos protection
+            length(flatten(output.value)) <= 5,
+          }
+        securityTokenInOutput + result
+      },
     )
 
-  let outputsAndRefInputIndexes =
-    list.zip(outputsWithThisToken, receiversNFTIndex)
-
-  and {
-    //We don't check the datum because we don't use it but it exists to be CIP-113 compliant
-    length(outputsWithThisToken) == length(receiversNFTIndex),
-    list.all(
-      outputsAndRefInputIndexes,
-      fn(outputAndRefIndex) {
-        let output = outputAndRefIndex.1st
-        expect Some(outputStakeCredential) = output.address.stake_credential
-        expect Some(userRefInput) =
-          list.at(referenceInputs, outputAndRefIndex.2nd)
-        and {
-          is_output_to_sc(output, transferManagerScriptHash),
-          is_user_allowed(
-            userRefInput,
-            outputStakeCredential,
-            stateManagerHash,
-            userStateAssetName,
-          ),
-          //dos protection
-          length(flatten(output.value)) <= 5,
-        }
-      },
-    ),
-  }
+  totalTokensInOutput == actualInputTotalAmount
 }
 
 fn all_sc_inputs_from_same_user(

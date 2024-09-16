@@ -65,7 +65,7 @@ pub type StateManagerData {
 }
 
 pub type StateManagerDatum {
-  credentials: Credential,
+  credential: Credential,
   data: StateManagerData,
 }
 
