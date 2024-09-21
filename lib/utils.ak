@@ -99,3 +99,16 @@ pub fn get_outputs_with_token(
     fn(output) { quantity_of(output.value, policyId, assetName) > 0 },
   )
 }
+
+pub fn all_sc_inputs_from_same_user(
+  inputs: List<Input>,
+  userStakeCredential: StakeCredential,
+) {
+  list.all(
+    inputs,
+    fn(input) {
+      expect Some(inputStakeCredential) = input.output.address.stake_credential
+      inputStakeCredential == userStakeCredential
+    },
+  )
+}

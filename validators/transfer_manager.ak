@@ -15,8 +15,8 @@ use types.{
   TransferManagerSpendRedeemer, TransferManagerWithdrawRedeemer, TransferOutput,
 }
 use utils.{
-  get_inputs_from_sc, get_own_hash, is_output_to_sc,
-  must_be_signed_by_stake_credential,
+  all_sc_inputs_from_same_user, get_inputs_from_sc, get_own_hash,
+  is_output_to_sc, must_be_signed_by_stake_credential,
 }
 
 validator transfer_manager(
@@ -166,6 +166,24 @@ validator transfer_manager(
   }
 }
 
+pub fn test_validate_all_inputs_and_get_total_amount(
+  inputs: List<Input>,
+  transferManagerScriptHash: ByteArray,
+  securityAssetName: AssetName,
+  userRefInput: Input,
+  stateManagerHash: PolicyId,
+  userStateAssetName: AssetName,
+) {
+  validate_all_inputs_and_get_total_amount(
+    inputs,
+    transferManagerScriptHash,
+    securityAssetName,
+    userRefInput,
+    stateManagerHash,
+    userStateAssetName,
+  )
+}
+
 fn validate_all_inputs_and_get_total_amount(
   inputs: List<Input>,
   transferManagerScriptHash: ByteArray,
@@ -249,19 +267,6 @@ fn validate_all_outputs(
     )
 
   totalTokensInOutput == actualInputTotalAmount
-}
-
-fn all_sc_inputs_from_same_user(
-  transferManagerInputs: List<Input>,
-  userStakeCredential: StakeCredential,
-) {
-  list.all(
-    transferManagerInputs,
-    fn(input) {
-      expect Some(inputStakeCredential) = input.output.address.stake_credential
-      inputStakeCredential == userStakeCredential
-    },
-  )
 }
 
 fn validate_lock_and_change_outputs(

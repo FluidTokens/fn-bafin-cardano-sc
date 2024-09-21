@@ -6,7 +6,7 @@
 //Bafin can remove an issuer changing stakeCredentials of his issuer utxo.
 //A issuer can edit the security infos for the security_info utxos he controls.
 //A issuer can remove an admin changing stakeCredentials of his admin utxo.
-//An admin can freeze a user changing stakeCredentials of his state utxo.
+//An admin can freeze a user changing stakeCredentials of his state utxo datum.
 //An admin can lock user's securities sending them in a utxo to locked_transfer_manager. 
 //An admin can lock user's securities and give them to anyone sending them in a utxo to transfer_manager. 
 
