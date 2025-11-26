@@ -34,6 +34,7 @@ validator config_mint_validator(
       //I am minting only 1 token (NFT)
       quantity_of(self.mint, policy_id, constants.config_asset_name) == 1,
       //NFT goes to the output
+      // maybe build an expected value (w/o lovelaces, to prevent otehr tokens being sent?)
       quantity_of(
         output_parameters.value,
         policy_id,
@@ -66,6 +67,7 @@ validator config_spend_validator(owner_credential_hash: ByteArray) {
 
     and {
       // value too restrictive, even just value w/o lovelaces must be same.
+      // if we enforce only ada and 1 nft at minting time, this is fine. or we need to build expected value w/o lovelaces and compare
       input_contract.output.value == output_contract.value,
       input_contract.output.address == output_contract.address,
       //Must be signed by the owner

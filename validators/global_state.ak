@@ -14,6 +14,8 @@ use types/global_state.{
 use types/power_users.{PowerUser}
 use utils.{must_be_signed_by_credential, quantity_of_policy_id}
 
+// same points as the config utxo: diferent scripts, could be just one w/ two purposes and all the parameters.
+// when minting, we're not sanity checking the config
 validator global_state_mint_validator(tx0: ByteArray, index0: Int) {
   mint(_redeemer: Data, policy_id: PolicyId, self: Transaction) {
     let contract_credential = Script(policy_id)
@@ -137,6 +139,7 @@ validator global_state_spend_validator(
             power_user_anchor_node_ref_input_index,
           )
         let expected_datum =
+          // nitpick should we check that the status is actually changing? so that we are not suspending if it's already suspended?
           GlobalStateDatum {
             transfers_paused,
             mintable_amount: input_datum.mintable_amount,
@@ -160,6 +163,7 @@ validator global_state_spend_validator(
           //Datum must change only transfers_paused
           parsed_global_state_output_datum == expected_datum,
           //No Value change
+          // too strict, value w/o lovelaces
           own_input.output.value == global_state_output.value,
         }
       }
