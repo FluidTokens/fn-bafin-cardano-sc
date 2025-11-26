@@ -20,6 +20,8 @@ validator config_mint_validator(
     let one_time_utxo = OutputReference(tx0, index0)
     //We won't use input_present, we just need it to be there, otherwise error
     expect Some(_input_present) = find_input(self.inputs, one_time_utxo)
+
+    // Missing sanity check datum (cast config to inline datum)
     let output_parameters = utils.safe_list_at(self.outputs, 0)
 
     and {
@@ -45,6 +47,8 @@ validator config_mint_validator(
   }
 }
 
+// 1. why different script, and not just add spend purposes to one above? 
+// 2. owner key can't be rotated?
 validator config_spend_validator(owner_credential_hash: ByteArray) {
   spend(
     datum_opt: Option<Config>,
@@ -57,10 +61,11 @@ validator config_spend_validator(owner_credential_hash: ByteArray) {
     let output_contract = utils.safe_list_at(self.outputs, 0)
     expect InlineDatum(output_datum) = output_contract.datum
     //value can be anything but the type must be of correct type
+    // are we sure the value can be anything? the policy id of the token is unmodifiable.
     expect _casted_datum: Config = output_datum
 
     and {
-      // asserting againt the value is dangerous as mintuxo can change depending on the bytes used by the datum
+      // value too restrictive, even just value w/o lovelaces must be same.
       input_contract.output.value == output_contract.value,
       input_contract.output.address == output_contract.address,
       //Must be signed by the owner
