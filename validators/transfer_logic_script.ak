@@ -42,6 +42,8 @@ validator transfer_logic_validator(
       }
 
     //Collect unique input stake_cred that must be verified
+    // While this logically is fine, list traversing is very expensive.
+    // This could be nested/combine with the next one?
     let inputs_user_stake_cred_hash =
       list.unique(
         list.foldr(
@@ -79,6 +81,8 @@ validator transfer_logic_validator(
           //The last input is not checked but will return its value at the end, so if False withdraw will fail
           expect result
 
+          // How is the order guaranteed here? Is it because input are ordered by utxo?
+          // Then mapped to address, split stake key only, maintain order and remove duplicates?
           let action =
             utils.safe_list_at(redeemer.actions_for_each_input, index)
 
@@ -105,8 +109,9 @@ validator transfer_logic_validator(
             ),
             //Node must have the user credential hash
             parsed_user_node_datum.key == Key { key: input_stake_cred_hash },
-            //Tx must be signed by the user owning this utxo
-            //Already done by CIP113 programmable_logic_global
+            //Tx must be signed by the user owning this utxo 
+            // No need this is already done I think at progr_global 
+            must_be_signed_by_credential(self, input_stake_cred_hash),
             //User has been verified
             user_state.is_verified == True,
             //User is not blacklisted
