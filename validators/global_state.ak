@@ -27,6 +27,11 @@ validator global_state_mint_validator(tx0: ByteArray, index0: Int) {
 
     and {
       //First output goes to this address
+      // This is wrong because it's sent to the mint script address, and not the spend, the mint validator *should* be parameterised w/ the 
+      // scirpt hash of the spending script OR, set it into the redeemer, OR ignore and just "trust" it's going to be sent to the correct address
+      // note that, in case it's not wired as parameter, but passed as redeemer OR just trust is sent to the correct spendind address
+      // will de facto break the circular dependency allowing to compile this contract, derive hash, set it into the token minting, and then use that
+      // value to parameterise spending and use it as redeemer to validate output address, or at least set it w/o validating it
       output_parameters.address.payment_credential == contract_credential,
       //Only 1 token of same policy
       quantity_of_policy_id(self.mint, policy_id) == 1,
