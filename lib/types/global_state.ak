@@ -8,6 +8,8 @@ pub type GlobalStateDatum {
   //PowerUsers linked list minting policy
   power_user_linked_list_policy_id: ByteArray,
   //Regulation (eg. BaFin) compliancy info, not directly used in the contracts
+  // For the KYC pkh providers, instead of having a linked list, which would force yet another ref input, we can just store the credential hash in the
+  // global state. WDYT? 
   security_info: Data,
 }
 
