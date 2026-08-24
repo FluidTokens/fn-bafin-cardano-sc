@@ -489,18 +489,7 @@ control UTxO could be pushed to the min-ADA floor — after which any datum grow
 protocol's only control UTxO becomes permanently unspendable**, with no way to top it up, because
 every spend runs the same validator.
 
-### The fix
-
-ADA may be added but never removed — `global_state_spend_validator.spend`, the `value_preserved`
-binding (`validators/global_state.ak:271`):
-
-```aiken
-assets.lovelace_of(global_state_output.value) >= assets.lovelace_of(own_input.output.value)
-```
-
-**Pinned by** `global_state_spend_rejects_a_lovelace_withdrawal`. Note this is a `!` test, not a
-`fail` one: the check is a conjunct of an `and { }` block, so the validator returns `False` rather
-than trapping.
+**Accepted**: The severity is accepted, since the actions must be signed by and admin or an authorized user. So an ada withdrawl is allowed.
 
 ---
 

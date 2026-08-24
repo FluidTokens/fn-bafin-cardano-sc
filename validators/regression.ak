@@ -48,7 +48,6 @@ use cardano/transaction.{
 use constants
 use denylist as v_denylist
 use denylist/absence.{verify_denylist_absence}
-use global_state as v_global_state
 use minting_authority as v_minting_authority
 use power_users as v_power_users
 use transfer_logic_script as v_transfer
@@ -56,10 +55,7 @@ use types/denylist.{
   AddToDenylist, Deinit as DenylistDeinit, Denylist, Init as DenylistInit,
   RemoveFromDenylist, StateTransition as DenylistStateTransition,
 }
-use types/global_state.{
-  GlobalStateDatum, GlobalStateReferenced, GlobalStateSpendRedeemer,
-  LockUpgrades,
-}
+use types/global_state.{GlobalStateDatum, GlobalStateReferenced}
 use types/kyc_proof.{Attestation, AttestationProof, KycProof}
 use types/minting_authority.{
   MintBurn, MintingAuthorityWithdrawRedeemer, MintingLogicDestinationAction,
@@ -702,23 +698,6 @@ fn run_authority(
     reference_name,
     redeemer,
     Script(authority_hash),
-    tx,
-  )
-}
-
-fn run_gs_spend(
-  input_datum: GlobalStateDatum,
-  redeemer: GlobalStateSpendRedeemer,
-  tx: Transaction,
-) -> Bool {
-  v_global_state.global_state_spend_validator.spend(
-    sec_name,
-    issuance_policy,
-    gs_policy,
-    pu_script_hash,
-    Some(input_datum),
-    redeemer,
-    oref(0),
     tx,
   )
 }
@@ -1628,52 +1607,6 @@ test mint_rejects_one_action_covering_both_credential_forms() fail {
       power_user_node_ref_input_index: 0,
       minted_amount: 1_000,
       destination_actions: [mint_dst_action(2)],
-    },
-    tx,
-  )
-}
-
-// ============================================================================
-// PROPERTY: a forced transfer may only land on a vetted destination.
-// ============================================================================
-
-// The decoy-registry-node seizure test formerly here is gone: that property
-// is now delegated to the base layer. `third_party_transfer_logic_validator`
-// no longer reads a registry node at all — the policy it polices is pinned
-// at compile time — so a decoy node naming this script (registry field 4 is
-// a FREE CIP-113 field) has nothing to bypass any more.
-
-// ============================================================================
-// PROPERTY: the GlobalState UTxO's value is preserved across every spend —
-// including its ADA.
-// ============================================================================
-
-/// THE DEFECT. Every branch of `global_state_spend_validator` compares values with
-/// `without_lovelace` (validators/global_state.ak:216), so the ADA balance of
-/// the GlobalState UTxO is unconstrained. Any authorised action doubles as a
-/// withdrawal: here `LockUpgrades` walks off with 498.5 ADA. It also means the
-/// UTxO can be pushed to the min-ADA floor, after which any later datum growth
-/// (a larger `security_info`, more trusted entities) makes the continuing output
-/// unsatisfiable and the protocol's control UTxO unspendable.
-///
-/// THE GUARD. `value_preserved` gained a
-/// `lovelace_of(output) >= lovelace_of(input)` conjunct: ADA may be topped up,
-/// never removed. It is a conjunct of an `and { }` block, so the validator
-/// returns False rather than trapping — hence `!`, NOT `fail`.
-test global_state_spend_rejects_a_lovelace_withdrawal() {
-  let input_datum = gs_datum(False, False, False, False)
-  let out_datum = GlobalStateDatum { ..input_datum, upgrades_locked: True }
-  let tx = Transaction {
-    ..base_tx(),
-    inputs: [gs_utxo(0, 500_000_000, input_datum)],
-    outputs: [gs_output(1_500_000, out_datum)],
-    extra_signatories: [admin],
-  }
-  !run_gs_spend(
-    input_datum,
-    GlobalStateSpendRedeemer {
-      global_state_output_index: 0,
-      action: LockUpgrades,
     },
     tx,
   )
