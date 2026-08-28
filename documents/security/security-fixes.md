@@ -1,7 +1,9 @@
 # Security fixes
 
 An adversarial internal review of this token's compliance layer — the denylist, the KYC gates, and
-the transfer, seizure and minting logic — found eleven defects. Two were critical and reachable by
+the transfer, seizure and minting logic — found eleven defects; a re-audit on 2026-08-28 found two
+more (12 and 13, both fixed) and a set of items judged
+[not to warrant a code change](#acknowledged-and-deliberately-not-changed). Two were critical and reachable by
 any wallet with no prior position in the protocol. This document records each one: what was wrong,
 why it was wrong, how it was fixed, and why that fix rather than another.
 
@@ -29,13 +31,17 @@ the wrong asset name, a list root that did not link to the node being removed, a
 | [4](#4-the-mint-roles-rested-entirely-on-external-code) | The mint roles rested entirely on external code | High | Fixed |
 | [5](#5-pause-does-not-stop-issuance) | Pause does not stop issuance | Medium | **Accepted, by decision** |
 | [6](#6-mint-destinations-were-vetted-by-stake-credential-only) | Mint destinations were vetted by stake credential only | Medium | Fixed |
-| [7](#7-the-globalstate-utxos-ada-balance-was-unconstrained) | The GlobalState UTxO's ADA balance was unconstrained | Low | Fixed |
+| [7](#7-the-globalstate-utxos-ada-balance-was-unconstrained) | The GlobalState UTxO's ADA balance was unconstrained | Low | **Accepted, by decision** |
 | [8](#8-genesis-did-not-sanity-check-the-two-list-policy-ids) | Genesis did not sanity-check the two list policy ids | Low | Fixed |
 | [9](#9-credential-type-was-erased-throughout) | Credential type was erased throughout | Low | Fixed |
 | [10](#10-the-membership-kyc-variant-bound-neither-policy-nor-network) | The membership KYC variant bound neither policy nor network | Info | Fixed |
 | [11](#11-the-power-user-authority-footgun-was-undocumented) | The power-user authority footgun was undocumented | Info | Fixed |
+| [12](#12-dismantling-either-linked-list-was-a-one-way-freeze-of-a-live-protocol) | Dismantling either linked list was a one-way freeze of a live protocol | Medium | Fixed |
+| [13](#13-cip-68-metadata-tokens-were-governed-by-an-exact-name-not-by-their-kind) | CIP-68 metadata tokens were governed by an exact name, not by their kind | Medium | Fixed |
 
-Then: [the linked-list dependency](#the-linked-list-dependency),
+Findings 12 and 13 come from the 2026-08-28 re-audit; 1–11 from the original review. Then:
+[acknowledged and not changed](#acknowledged-and-deliberately-not-changed),
+[the linked-list dependency](#the-linked-list-dependency),
 [what the base layer guarantees](#what-the-cip-113-base-layer-actually-guarantees),
 [what this changes for off-chain](#what-this-changes-for-off-chain),
 [what is still open](#what-is-still-open).
@@ -483,13 +489,35 @@ the **seizure path** (`third_party_transfer_logic_validator`), on the same basis
 `value_preserved` compared `without_lovelace` on both sides, and all eleven spend branches compose
 that same value. The non-ADA value was pinned; the ADA was free.
 
-Two effects. Any authorised action doubled as an undeclared ADA withdrawal. More importantly, the
-control UTxO could be pushed to the min-ADA floor — after which any datum growth (a larger
-`security_info`, another trusted entity) makes the continuing output unsatisfiable and **the
-protocol's only control UTxO becomes permanently unspendable**, with no way to top it up, because
-every spend runs the same validator.
+The effect: any authorised action also moves the UTxO's ADA freely, in either direction.
 
-**Accepted**: The severity is accepted, since the actions must be signed by and admin or an authorized user. So an ada withdrawl is allowed.
+**Accepted by decision (2026-08-21), and the check has been removed.** The actions that reach this
+line are all signed — by the admin, or by a power user holding the relevant flag — so an ADA
+withdrawal from the control UTxO is a privileged operator moving their own working capital, not an
+attack. `value_preserved` is therefore exactly what the code says it is, and nothing more:
+
+```aiken
+// validators/global_state.ak
+let value_preserved = without_lovelace(own_input.output.value) == without_lovelace(
+  global_state_output.value,
+)
+```
+
+Non-ADA value — the GlobalState NFT above all — is pinned. Lovelace is not, in either direction.
+
+An earlier revision of this section also claimed that draining the UTxO to the min-ADA floor could
+make it *permanently unspendable*, because a later datum growth would leave the continuing output
+unsatisfiable. **That was overstated and is withdrawn.** Since the validator ignores lovelace
+entirely, any spend may top the UTxO back up in the same transaction, so there is no floor to get
+stuck at.
+
+What remains true, and is an operational note rather than a defect: the control UTxO is spent by
+every mint, burn and admin action, and a transaction carrying attestation proofs is not small. Keep
+enough ADA on it to cover the min-UTxO of a datum that may grow (see
+[the datum caps](#datum-size-the-three-caps-do-not-add-up-to-a-joint-bound) below).
+
+The regression test that pinned the removed check (`global_state_spend_rejects_a_lovelace_withdrawal`)
+was deleted with it.
 
 ---
 
@@ -638,11 +666,391 @@ the moment any named script is upgraded.
 
 ---
 
+## 12. Dismantling either linked list was a one-way freeze of a live protocol
+
+**Severity: medium.** Admin-only, but irreversible and — unlike `DeactivateContract` — invisible
+afterwards: the token keeps reporting itself active.
+
+### What was wrong
+
+Both list mint validators carried a `Deinit` branch that burned the list's root NFT. Its only
+preconditions were the admin's signature and an empty list (the library's `deinit` requires the
+root's `link` to be `None`). Nothing checked whether the protocol was still running.
+
+Burning a root is irreversible in both directions:
+
+* `Init` is gated on a one-shot `OutputReference` consumed at genesis, so a root can never be
+  re-created; and
+* `denylist_linked_list_policy_id` / `power_user_linked_list_policy_id` are immutable in the
+  GlobalState datum — no spend branch writes them — so GlobalState can never be pointed at a
+  replacement list either.
+
+For the **denylist**, that is a total freeze. Every movement of the security token resolves a
+covering node of that list as a reference input — the transfer path, the seizure path, and every
+mint destination all go through `lib/denylist/absence.ak`. With no element in existence, no covering
+node can be produced, so nothing can ever move again. The token is not `deactivated`, so nothing on
+chain says why.
+
+For the **power-users list** it is at least as broad. `AddPowerUser` needs an existing element as
+its insert anchor, so with the root gone no operator can ever be added again: mint, burn, pause,
+unpause, seizure and sanctions administration all authenticate against a node of that list. If
+transfers happened to be paused at that moment they stay paused forever, because unpausing needs a
+`can_pause` node.
+
+Neither consequence was documented, and an empty list is not an unusual state — it is the state at
+genesis, and the state again after the last sanctioned wallet is released.
+
+### The fix
+
+`Deinit` is now **post-decommission cleanup**: it requires `deactivated` first.
+
+```aiken
+// validators/denylist.ak — and the same shape in validators/power_users.ak
+let gs = gs_datum_from_ref_input(
+  self.reference_inputs,
+  global_state_ref_input_index,
+  global_state_policy_id,
+)
+and {
+  gs.deactivated?,
+  must_be_signed_by_credential(self, gs.admin_credential_hash),
+  ...
+}
+```
+
+Two irreversible decisions now have to happen in the only honest order: retire the token, then
+dismantle its lists. The branch keeps its purpose — reclaiming the root's min-ADA once the token is
+finished — and loses its ability to end a live protocol.
+
+Note the reader: `gs_datum_from_ref_input`, **not** `active_admin_from_ref_input`. The latter traps
+on a deactivated protocol, which is exactly the state this branch now requires. The GlobalState UTxO
+can no longer be *spent* after `DeactivateContract` (the spend validator's terminal guard), but it
+is still *readable* as a reference input, so the admin credential remains available.
+
+**Pinned by** `denylist_deinit_succeeds_for_the_admin_after_deactivation` /
+`denylist_deinit_rejects_a_live_protocol` (`validators/regression.ak`) and
+`power_users_deinit_succeeds_for_the_admin_after_deactivation` /
+`power_users_deinit_rejects_a_live_protocol` (`validators/power_users.ak`), each paired with the
+existing missing-signature test. The negative tests are `!` rather than `fail`: `gs.deactivated?` is
+a conjunct of an `and { }`, so the validator returns False. Both traces were read and name that
+assertion.
+
+### The decommissioning runbook, in order
+
+Deactivation is a tombstone: the terminal guard makes the GlobalState UTxO unspendable by any path,
+and node removal on both lists is blocked once it is set (`RemoveFromDenylist` goes through
+`power_user_from_refs`, which asserts `!deactivated`; `RemovePowerUser` uses
+`active_admin_from_ref_input`, which traps). `deinit` in turn requires an empty list. So the order
+below is load-bearing, not advisory — every step after the first is unavailable once the one before
+it has been skipped:
+
+1. **Sweep the GlobalState UTxO's surplus ADA** down to what it needs. After deactivation that UTxO
+   can never be spent again, so every lovelace left on it — along with the GlobalState NFT itself —
+   is locked forever. This is the one place the accepted ADA-withdrawal behaviour of
+   [§7](#7-the-globalstate-utxos-ada-balance-was-unconstrained) is not merely harmless but useful.
+2. **Pause** — needs a live `can_pause` power user, so it must happen while the operator list is
+   still populated.
+3. **Empty the denylist** (`RemoveFromDenylist` per entry, `is_admin` power user).
+4. **Empty the power-users list** (`RemovePowerUser` per entry, admin) — last, because steps 2 and 3
+   consume power-user nodes.
+5. **Deactivate** — admin signature and `transfers_paused` only; it deliberately needs **no**
+   power-user reference input, so it still works after step 4 has emptied the list.
+6. **`Deinit` both lists** — admin, now permitted because `deactivated` is set, and possible because
+   steps 3 and 4 left each list empty.
+
+Skipping step 1 strands the GlobalState UTxO's whole balance. Skipping step 3 or 4 strands that
+list's remaining nodes **and its root** — roughly 2 ADA each — because `deinit` can never run on a
+non-empty list and the nodes can no longer be removed. None of this risks the register or any
+holder's tokens; it is the operator's own deposits. But note the realistic case: a token retired for
+compliance reasons will usually still have denylist entries, and un-sanctioning those parties purely
+to reclaim deposits may not be an acceptable action — so expect the denylist's `Deinit` to go unused
+in practice, and treat its deposits as sunk.
+
+**The trade this fix makes, stated plainly.** Before it, `Deinit` was reachable at any time, so those
+deposits were always recoverable — at the cost of a single admin transaction being able to freeze a
+live protocol irreversibly and invisibly. After it, the freeze is impossible and the deposits are
+recoverable only in the documented order. That is the right way round, but it is a trade, not a pure
+win.
+
+---
+
+## 13. CIP-68 metadata tokens were governed by an exact name, not by their kind
+
+**Severity: medium. Fixed.** Reported as a seizure defect; fixed as a general rule, because the
+seizure hole was one symptom of the underlying shape.
+
+### What was wrong
+
+Every compliance scan in this substandard is scoped to `security_asset_name` — the destination folds
+that feed `compliance.verify_parties`, `at_least_one_seized_input`, the mint destination walk. A
+CIP-68 token lives under the **same issuance policy** but a different asset name, so it was invisible
+to all of them, and the only thing that distinguished it was an exact-name compile-time parameter,
+`reference_asset_name`.
+
+That produced three gaps:
+
+1. **The seizure path could take it.** A `can_force_transfer` operator could spend the admin-owned
+   metadata UTxO alongside one unit of their own security-token dust — the dust satisfying "must
+   actually seize something" — and re-output the token to any address with any datum. No admin
+   signature, no denylist check, no KYC check, even with `requires_receiver_kyc` set. That defeats the
+   property registration establishes: the admin is the CIP-68 metadata authority by construction.
+2. **"Only one metadata token" was true by accident, not by design.** With an exact-name parameter at
+   most one name could ever match the metadata arm of the mint allowlist, so a second metadata token
+   was unconstructible — but nothing *stated* the rule, and it would have evaporated the moment the
+   parameter became anything less specific.
+3. **The UTxO's shape was a posture at genesis, not an invariant.** `reference_nft_output_is_pinned`
+   checked the owner and that the first supply was not co-located, once, at registration. It did not
+   inspect the datum at all, and nothing re-checked anything afterwards — so a later metadata update,
+   which travels the ordinary transfer path, could co-locate the token with supply or write a datum
+   no CIP-68 reader can parse.
+
+There was also a trap in the exact-name design. Setting `reference_asset_name == security_asset_name`
+was the documented way to disable CIP-68, which made "was a metadata token minted?" ambiguous: the
+quantity test read the security token's own mint. Every check had to carry an aliasing escape hatch,
+and getting one wrong would have refused every ordinary transfer.
+
+### The fix
+
+Identify metadata tokens by **kind**, not by name. `constants.cip68_protected_prefix` is the CIP-67
+label that marks a token as metadata — `(100)`, and nothing else is or can be — and `lib/cip68.ak`
+holds the predicates the validators share.
+
+```aiken
+// lib/constants.ak
+pub const cip68_protected_prefix: ByteArray = #"000643b0"
+pub const cip68_protected_prefix_length = 4
+```
+
+A single constant rather than a list, on review feedback: `(100)` is the only CIP-68 metadata label,
+so `is_protected` is one comparison against one constant instead of a fold over a one-element list.
+On a check that runs per token per output on the transfer path that is not cosmetic — the predicate
+dropped from 5.91 K memory / 1.29 M CPU to **200 memory / 16.1 K CPU**.
+
+**The security token may not be protected.** `verify_registration_structure` asserts
+`!cip68.is_protected(security_asset_name)`. This is what removes the aliasing trap: the protected set
+and the supply name are now disjoint by construction, so no check needs an escape hatch, and a
+deployment that named its supply `(100)…` fails closed at registration instead of silently refusing
+every transfer and seizure later.
+
+**Rule 1 — at most one metadata token, minted once.** `only_permitted_assets_minted` now admits a
+non-supply name only if a branch allows it (`RegisterMint` alone), it carries a protected prefix, and
+its quantity is exactly one — and separately counts protected entries, requiring `<= 1`. With
+prefixes, `(100)Foo` and `(100)Bar` both reach that arm, so the count has to be stated rather than
+assumed.
+
+**Rule 2 — the UTxO holds ADA plus that token, with a well-formed datum.**
+`cip68.output_is_well_formed` asserts the value structurally (`[Pair(ada, _), Pair(policy, names)]`,
+then `[Pair(name, 1)]`) and decodes the datum as `Cip68Datum` — CIP-68's `Constr 0 [metadata,
+version, extra]`. It runs at registration via `cip68_output_is_pinned`, which additionally pins the
+owner to the GlobalState admin, **and on every later move** inside `transfer_logic_script`'s existing
+output fold. That second half is what makes it an invariant: the transfer path is how a metadata
+update happens.
+
+**Rule 3 — seizure may not touch it.** `third_party_transfer_logic_script` refuses any transaction
+whose **inputs** carry a protected token. Inputs, not outputs, because the token can only change
+hands if its UTxO is spent, so refusing the whole transaction is simpler and stricter than vetting
+where it lands. Metadata updates are unaffected — they take the transfer path, where the base layer
+requires the owner's own consent.
+
+### Cost
+
+Rule 2's transfer-path half is on the hot path, so it was measured rather than assumed. The output
+fold now does ONE `assets.tokens` lookup per output and answers both of its questions from it — "is
+this a destination?" and "does this carry metadata?" — where it previously did one `quantity_of`.
+`aiken bench -m "transfer_logic_script.{..}"`, same seed, before and after:
+
+| | memory | CPU |
+|---|---|---|
+| 1 sender + 1 destination, before | 613.12 K | 182.77 M |
+| 1 sender + 1 destination, after | 626.45 K | 186.34 M |
+| | **+2.2 %** | **+1.9 %** |
+
+Growing to roughly +4 % memory at 30 parties per side. That is the price of the invariant, paid by
+every transfer; it was judged worth it because the alternative is a rule that is true only at genesis.
+
+Two review-driven changes brought that figure down from an initial +2.9 % / +2.6 %: the single
+constant above, and dropping the ADA entry from the value with `dict.expect_tail` instead of
+comparing it — every UTxO carries lovelace and a `Value` sorts the empty policy id first, so the
+comparison was provably redundant.
+
+### Tests
+
+`lib/cip68.ak` carries unit tests for both predicates — label `(100)` protected, `(333)` not, a
+truncated name not (and not a trap); and the canonical shape accepted against five rejections
+(co-located security token, foreign policy, quantity two, malformed datum, missing datum). The
+validators carry the integration tests: a registration whose metadata output has a malformed datum or
+holds supply; a registration whose `security_asset_name` is protected; a seizure that spends a
+protected token, with the ordinary seizure beside it as control; and a metadata update through the
+transfer path, well-formed as control and rejected when malformed or co-located. Every negative was
+run individually and its trace read, to confirm it stops at the intended assertion rather than
+incidentally — one of them did not at first, and was rewritten.
+
+One existing test changed its ANNOTATION, not its meaning:
+`register_mint_rejects_a_reference_nft_co_located_with_supply` was `!run_withdraw` and is now `fail`,
+because the co-location rule moved from a `Bool` conjunct into the structural assertion in
+`output_is_well_formed`. The transaction was rejected before and is rejected now.
+
+### Deployment
+
+`minting_authority_validator` loses the `reference_asset_name` parameter — **9 → 8** — so deploy
+scripts must drop it. No redeemer or datum schema changes. Three hashes move, all upgradeable in
+place: `minting_authority` (rotatable via `RotateMintingScript`), `transfer_logic_script` and
+`third_party_transfer_logic_script` (registry fields 3 and 4, re-pointable via
+`UpgradeRegistryNode`). Verified empirically: the two list mint validators' hashes do **not** move, so
+adding the constant perturbs nothing that does not use it.
+
+---
+
+## Acknowledged, and deliberately not changed
+
+Findings from the 2026-08-28 audit that were reviewed and judged not to warrant a code change. They
+are recorded here so a future reader does not have to re-derive the reasoning — and so that a future
+*change* in any of these areas is a conscious one.
+
+### The transfer withdraw-0 is satisfiable with no parties
+
+`transfer_logic_validator.withdraw` accepts a transaction that moves no security token at all: both
+party folds produce `[]`, `compliance.verify_parties` returns True on the empty list, and only the
+pause and deactivation flags remain. Any wallet can therefore include this script's withdraw-0 in a
+transaction of its own.
+
+On its own this moves nothing. The CIP-113 base layer only dispatches to this script when a
+programmable-base UTxO of the policy is actually spent, and that spend independently requires the
+holder's consent (`programmable_logic/owner.ak`). What it does mean is that the transfer script's
+hash behaves as a credential *anyone* can satisfy — which matters only in combination with the
+documented footgun in [§11](#11-the-power-user-authority-footgun-was-undocumented): a role
+credential or `admin_credential_hash` mistakenly set to this script's hash would be publicly
+satisfiable. The prescribed smoke test already catches exactly that misconfiguration.
+
+Left as is. The seizure path carries an equivalent guard (`at_least_one_seized_input`) because it
+authorises an *override* and must be bound to real seized value; the transfer path authorises
+nothing on its own.
+
+### `PauseTransfers` accepts a no-op transition
+
+The branch does not require `transfers_paused` to actually change, so a `can_pause` operator can
+re-pause an already-paused protocol. This churns the single control UTxO and, given that lovelace is
+unconstrained (§7), can move ADA out of it repeatedly.
+
+Not a defect: the operator is signing, holds the flag, and can already pause and unpause at will —
+the no-op grants no authority they lack. The recovery is the ordinary one, the admin removing the
+flag. (`LockUpgrades` *does* refuse a no-op, but for a different reason: it is one-way, so
+`True → True` would be a silent no-op on an irreversible action.)
+
+### Datum size: the three caps do not add up to a joint bound
+
+`max_trusted_entities` (64), `max_trusted_entity_metadata_bytes` (512 B) and
+`max_security_info_bytes` (4096 B) are enforced independently, and nothing checks their sum. At the
+maxima the GlobalState datum would serialise to roughly 40 KB — well past the ~16 KiB transaction
+limit the caps' own comment cites as their reason for existing.
+
+Not a lockup, and this is the part worth stating precisely: the transaction that would push the
+datum over the limit is itself rejected by the ledger, and since the validator ignores lovelace and
+every branch may shrink a field again, there is no state you can get stuck in. What a determined
+admin *can* do is inflate their own control UTxO to the point where a mint carrying attestation
+proofs (≈ 370 B per attested destination) no longer fits alongside it — a self-inflicted, reversible
+squeeze.
+
+Operationally: keep `security_info` and the trusted-entity list small. If a joint bound is ever
+wanted, one `serialise_data` of the continuing output datum per spend replaces all three caps and is
+strictly stronger.
+
+### KYC revocation is per issuer or per holding, never per holder-before-TTL
+
+The two proof channels are independent by design. `verify_attestation_proof` never consults
+`member_root_hash`, and `verify_membership_proof` never consults the trusted-entity list. So
+removing a holder from the membership tree does **not** invalidate an attestation that holder already
+holds: until it expires, they can still transfer.
+
+The on-chain levers are therefore: revoke the *issuer* (remove its vkey from the TEL — immediate,
+but it invalidates every attestation that issuer signed), or sanction the *holder* (add them to the
+denylist — immediate and per holder, but it means "sanctioned", which is a different regulatory
+statement from "KYC lapsed").
+
+**This makes attestation TTL a compliance parameter, not a performance one.** The exposure window
+for a withdrawn KYC status is exactly the TTL baked into the outstanding attestation
+(`valid_until_ms`, payload bytes 29–36). Issue short-lived attestations — hours, not weeks — and
+treat the TTL as the maximum time a de-KYC'd holder may still transact. A per-holder revocation
+before expiry would need a second MPF (a revocation tree the attestation path also has to miss);
+that is a design change, not a fix, and is not implemented.
+
+### Sanctions are single-signer and have no exempt list
+
+Any power user holding `is_admin` can add any 28-byte hash to the denylist, including the
+GlobalState admin's own credential, the treasury, or a fellow operator. There is no threshold and no
+exclusion list.
+
+Left as is, deliberately. Sanctioning an address freezes that address's *holdings*; it does not
+touch anyone's *role* — GlobalState actions never consult the denylist — so an operator cannot lock
+the admin out of administration. It is recoverable in one transaction (`RemoveFromDenylist`), and
+the admin can revoke the flag. Separation of duties, if wanted, means requiring two distinct
+`is_admin` signatures; that is a policy change for the deployment to decide.
+
+### Composition limits worth knowing when building transactions
+
+Two shapes that are simply not buildable, neither of them a defect:
+
+* **A list mutation cannot share a transaction with a GlobalState-spending admin action.** The list
+  validators read GlobalState as a *reference* input; admin actions *spend* it; Conway rejects a
+  transaction whose inputs and reference inputs overlap.
+* **Everything funnels through one control UTxO.** Every mint, burn and admin action spends
+  GlobalState, so they serialise against each other and a busy operator will hit contention. Batch
+  admin work rather than issuing it concurrently.
+
+### CI could not explain its own failures
+
+`aiken check` emits JSON and suppresses all diagnostics when stdout is not a terminal, which a CI log
+is not — so a failing test surfaced as a bare non-zero exit with no test name, assertion or trace.
+The job always failed correctly; it just could not say why. `.github/workflows/tests.yml` now runs
+the suite under a pseudo-terminal (`script -q -e -c "aiken check -D" /dev/null`).
+
+### Dead code removed
+
+`lib/types/issuance.ak` (unreferenced), and `is_paused` / `is_deactivated` in
+`lib/types/global_state.ak` with their tests. The two readers had no callers left — every validator
+decodes the full GlobalState datum — and an unused *weaker* authenticator (they check the NFT with
+`> 0` where `gs_datum_from_output` requires `== 1`) is a trap for the next person who needs a quick
+flag read. The field-order invariant comment that referred to them now states the real reason field
+order is load-bearing: the positional `idx_*` constants and the tripwire test that guards them.
+
+---
+
 ## What the CIP-113 base layer actually guarantees
 
 The base layer is not vendored here, so several severity judgements originally rested on
 assumptions. Those were checked by reading
-`cardano-foundation/cip113-programmable-tokens` at `feat/upgradability-in-place` (commit `018415d`).
+`cardano-foundation/cip113-programmable-tokens` at `feat/upgradability-in-place` (commit `018415d`),
+and **re-checked on 2026-08-28 against that repository's `main` at commit `9db7e06`.**
+
+**Every guarantee in the table below still holds at `9db7e06`.** What moved in between — five
+commits: #99 federated upgradability, #110 the dissolution of the programmable-logic *global*
+coordinator, #114 a PLB performance pass, #115 output-shape rules, #116 the Aiken v1.1.23 bump — and
+what a redeploy onto that base would have to account for:
+
+* **Dispatch is now per input.** `programmable_logic_base` reads the live `transfer_cred` /
+  `third_party_cred` / `unfracking_cred` from the protocol-params (coordination) datum and requires
+  the witnessed one's withdraw-0, under a `SpendViaTransfer` / `SpendViaThirdParty` /
+  `SpendViaUnfracking` redeemer. The *guarantee* — that this deployment's logic runs on every spend
+  of its token — is unchanged; the transaction shape and the base-layer redeemer are not, so
+  off-chain builders need updating before a redeploy.
+* **Programmable-base outputs must stay seizable (#115).** No datum hash and no reference script on
+  any output holding the policy, and every such output needs an inline stake credential. This is
+  enforced on the issuance path and on both third-party output scans.
+* **Inline datums are size-bounded (#115).** `max_inline_datum_bytes`, a protocol-params field,
+  now caps the inline datum of programmable-base outputs. **This applies to the CIP-68 reference
+  NFT's metadata datum**, which is the only datum this deployment puts on a token UTxO. Check the
+  deployed value before publishing metadata.
+* **A new trust dependency, and it is worth stating plainly.** `coordination_spend` lets whoever
+  holds `upgrade_cred` rewrite those three delegate credentials in place, subject only to a 28-byte
+  shape check. A rewrite pointing `transfer_cred` or `third_party_cred` at a permissive stub would
+  bypass this substandard's transfer and seizure gates entirely, in one transaction, with nothing on
+  this side able to detect or resist it. **Record who holds that authority for the target
+  deployment** (script, signers, threshold) and treat any change to the coordination datum as a
+  security event. See [what is still open](#what-is-still-open).
+
+The deployment currently targeted on preview still bootstraps a pre-#110 base layer — the layout the
+`018415d` verification describes — so the table applies as written to what is deployed today, and
+the notes above apply to any redeploy onto current `main`.
 
 | Claim | Verdict | Evidence | Relied upon by |
 |---|---|---|---|
@@ -690,6 +1098,64 @@ weakens the gate. But nothing works until off-chain moves:
 2. **The membership MPF tree must be rebuilt.** Leaf key `credential_type ‖ hash`; leaf value
    `valid_until_ms ‖ security_policy_id ‖ network_id`. Use the exported encoders. Rebuild the root
    **before** calling `UpdateMemberRootHash`.
+
+### The 2026-08-28 fixes: no schema change, one dropped parameter, five moved hashes
+
+**No redeemer or datum schema changed.** Every redeemer constructor, field order and datum shape in
+`plutus.json` is byte-identical, so a transaction builder's *encoding* is untouched.
+
+One compile-time **parameter list** changed: `minting_authority_validator` drops
+`reference_asset_name` (9 → 8), because fix 13 identifies metadata tokens by prefix rather than by an
+exact name. Deploy scripts must drop that argument; nothing else about them changes.
+
+Five hashes move in total across the two fixes, and they fall into two very different groups —
+see the tables below.
+
+**Fix 12 — redeploy-only.** These two hashes *are* the list policy ids, written into the GlobalState
+datum at genesis and immutable thereafter:
+
+| Validator | Change | Consequence |
+|---|---|---|
+| `denylist.mint` | `Deinit` deactivation gate | **Redeploy-only** |
+| `power_users.mint` | `Deinit` deactivation gate | **Redeploy-only** |
+
+**Fix 13 — upgradeable in place.** None of these is baked into an immutable field:
+
+| Validator | Change | How it is rolled out |
+|---|---|---|
+| `minting_authority` | prefix rules, dropped parameter | `RotateMintingScript` — the GlobalState datum names it, admin-signed |
+| `transfer_logic_script` | the shape invariant on every move | `UpgradeRegistryNode` — registry field 3 |
+| `third_party_transfer_logic_script` | refuses protected inputs | `UpgradeRegistryNode` — registry field 4 |
+
+The two list mint hashes were verified **not** to move under fix 13, so adding
+`constants.cip68_protected_prefix` perturbs nothing that does not read it.
+
+Every other validator's *source* is byte-identical, so every other **unapplied** hash in
+`plutus.json` is unchanged. But the two changed hashes are the two list **policy ids**, and those are
+compile-time parameters of most of the protocol — so the *applied* hashes cascade:
+
+| Applied artefact | Moves? | Because |
+|---|---|---|
+| `global_state_mint_validator` → **GlobalState policy id** | **no** | parameters are only the genesis UTxO |
+| `minting_logic_script` → **issuance policy id**, registry `key`, registry field 2 | **no** | its only parameter is the GlobalState policy id |
+| `power_users.mint` → power-users policy id | yes | source changed |
+| `power_users_validator` → power-users list address, `power_user_list_script_hash` | yes | takes the power-users policy id |
+| `denylist.mint` → denylist policy id | yes | source changed **and** takes `power_user_list_script_hash` |
+| `denylist_validator` → denylist address, `denylist_script_hash` | yes | takes the denylist policy id |
+| `global_state_spend_validator` → **the GlobalState UTxO's address** | yes | takes `power_user_list_script_hash` |
+| `transfer_logic_validator` → its withdraw-0 credential, registry field 3 | yes | takes `denylist_script_hash` |
+| `third_party_transfer_logic_validator` → its withdraw-0 credential, registry field 4 | yes | takes both list hashes |
+| `minting_authority_validator` → `minting_script_credential_hash` | yes | takes both list hashes and the power-users policy id |
+
+The token's own identity therefore survives — same issuance policy id, same registry key, same
+permanent proxy — but the GlobalState UTxO's **address** moves, and a GlobalState UTxO cannot migrate
+to a new address (every spend branch asserts `address_preserved`). **So this is a fresh genesis, not
+an upgrade.** Nothing is on mainnet, so that is the clean path.
+
+What does *not* change is the off-chain **code**: no redeemer, datum or parameter list is different,
+so every builder, encoder and parser keeps working verbatim. What changes is **configuration** — the
+addresses and policy ids above — plus one sequencing rule: a `Deinit` transaction is now valid only
+after `DeactivateContract`, though its redeemer and transaction shape are unchanged.
 
 ### Deployment
 
@@ -755,7 +1221,7 @@ Grant the two roles together to whoever is expected to perform court- or regulat
 
 ## What is still open
 
-**Two deployment properties that no code can check:**
+**Three deployment properties that no code here can check:**
 
 - **The GlobalState NFT must actually land at `global_state_spend_validator`'s address at genesis.**
   The genesis mint validator cannot verify this — the circularity is real, and it says so. Verify
@@ -763,6 +1229,12 @@ Grant the two roles together to whoever is expected to perform court- or regulat
   is forgeable and destructible by whoever holds that UTxO, with no exploit needed.
 - **Every role credential must name something that genuinely decides.** Run the smoke test described
   in defect 11, for all five roles, after every grant and rotation.
+- **The CIP-113 coordination UTxO's upgrade authority is part of this token's trust boundary.**
+  Whoever holds `upgrade_cred` can re-point the base layer's `transfer_cred`, `third_party_cred` and
+  `unfracking_cred` at scripts of their choosing, which would bypass every gate in this substandard
+  at once. Nothing on this side can detect or resist it. Record the authority (script, signers,
+  threshold) for the target network alongside the deployment parameters, and monitor the
+  coordination datum for changes. Identified in the 2026-08-28 re-audit.
 
 **Not attacked, and worth picking up:**
 
@@ -779,9 +1251,12 @@ Grant the two roles together to whoever is expected to perform court- or regulat
   scripts were measured in isolation.
 - **Merkle-Patricia-Forestry proof forgery.** The membership variant was analysed only at the
   binding level. No attempt was made against the vendored library.
-- **Attestation replay and revocation windows.** The operational consequence of an attestation
-  staying valid until its TTL after a holder is sanctioned was not modelled. The denylist check is
-  independent and live, so it looks sound, but it is unexamined.
+- **Attestation revocation windows — now examined, and the answer is a policy one.** An attestation
+  stays valid until its TTL regardless of the membership tree, so per-holder KYC withdrawal before
+  expiry is not achievable on chain; the levers are issuer revocation (TEL) and sanctioning (the
+  denylist), and the denylist check is independent and live throughout. See
+  [Acknowledged, and deliberately not changed](#acknowledged-and-deliberately-not-changed).
+  What remains open is the *operational* choice: pick and document a maximum attestation TTL.
 - **UTxO contention.** GlobalState is a single UTxO that every mint and burn must spend, so issuance
   is serialised at roughly one transaction per block. Inherent to the design, but worth sizing
   before launch.
@@ -789,6 +1264,21 @@ Grant the two roles together to whoever is expected to perform court- or regulat
   hand-built `Transaction`. None is confirmed against a real ledger. The intended ladder is
   `aiken check` → Yaci devnet → preview, and skipping a rung tells you very little about *why*
   something failed.
+
+### Re-audit — 2026-08-28
+
+A full re-audit against `main @ ff5624e` — every non-test line re-read and composed against the
+CIP-113 base layer at its then-current HEAD, plus a multi-agent find/refute/prove-by-test pass —
+found **no Critical or High defect**. It produced defects [12](#12-dismantling-either-linked-list-was-a-one-way-freeze-of-a-live-protocol)
+and [13](#13-cip-68-metadata-tokens-were-governed-by-an-exact-name-not-by-their-kind) (both Medium,
+both fixed),
+the correction to [§7](#7-the-globalstate-utxos-ada-balance-was-unconstrained) recorded above, the
+[acknowledged items](#acknowledged-and-deliberately-not-changed), and the base-layer
+re-verification. Around fifty attempted attacks were refuted against a specific line — including one
+that a single-validator test appeared to confirm (a same-transaction mint+burn netting to zero,
+claimed to skip destination vetting) and that composition refutes: the mint field is a net per asset
+name, so those units come from spent programmable-base inputs, and the base layer dispatches every
+such spend to this deployment's transfer or seizure logic.
 
 ### Later hardening — 2026-08-20
 
@@ -834,4 +1324,9 @@ now be minted alone into its own UTxO, never co-located with the first supply.
 
 The same day the reference NFT's owner was pinned to the GlobalState admin credential at registration: the admin is the CIP-68 metadata authority by construction, updating the metadata is the admin's owner-consent re-output of that UTxO with a new inline datum, and after `RotateAdmin` the outgoing admin hands the NFT over with an ordinary transfer (the pin applies at registration only; the datum itself is not inspected on-chain).
 
-Following the upstream review of 2026-08-21, two GlobalState checks were made cheaper without changing what they accept: the continuing-output value check now uses `assets.match` (one walk over both values — non-ADA assets identical, ADA may only grow), and the "no security token in this transaction" guard scans only the inputs, because every branch that composes it also forbids any mint or burn of the security asset and the ledger conserves value, so no output can carry a unit that was neither spent nor minted.
+Following the upstream review of 2026-08-21, the "no security token in this transaction" guard was
+made cheaper without changing what it accepts: it scans only the INPUTS, because every branch that
+composes it also forbids any mint or burn of the security asset, and the ledger conserves value — so
+no output can carry a unit that was neither spent nor minted. The continuing-output value check was
+reworked in the same round and then simplified again when the ADA constraint was dropped; see
+[§7](#7-the-globalstate-utxos-ada-balance-was-unconstrained) for what it does today.

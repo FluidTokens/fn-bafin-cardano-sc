@@ -36,10 +36,12 @@ pub type GlobalStateLocation {
 
 /// GlobalState datum — authenticated by the single global_state NFT.
 ///
-/// INVARIANT: `transfers_paused` MUST remain at field index 0. The fast
-/// pause-read via `is_paused` below relies on `unconstr_fields` + `head_list`
-/// to pull the first field without deserialising the whole datum. Reshuffling
-/// fields breaks that optimisation.
+/// INVARIANT: field ORDER is load-bearing. Every getter and setter below
+/// addresses the datum positionally through the shared `idx_*` constants, and
+/// `global_state_spend_validator` rewrites exactly one field by index on every
+/// branch. Reordering, inserting or removing a field silently reads or writes
+/// the wrong one — the tripwire test `gs_getters_read_correct_fields` exists to
+/// turn that into a build failure.
 pub type GlobalStateDatum {
   //If true, no transfer can be executed
   transfers_paused: Bool,
@@ -359,45 +361,6 @@ pub fn set_minting_script_credential_hash(
   )
 }
 
-/// Asserts the given input is an authentic GS UTxO (carries exactly 1 GS NFT)
-/// and returns whether transfers are paused. Reads only the first field of the
-/// datum (`transfers_paused`) via UPLC builtins — no full-datum deserialisation.
-///
-/// Fails (via UPLC error) if:
-///   * the input's value does not contain the GS NFT,
-///   * the datum is not an inline Constr, or
-///   * the first field of the datum is not a Constr (i.e. not a Bool).
-///
-/// Callers are responsible for locating the GS input first (e.g. via an index
-/// carried in the redeemer). Typical usage:
-///
-///   let gs_input = utils.safe_list_at(self.reference_inputs, redeemer.idx)
-///   expect !gs.is_paused(gs_input, global_state_policy_id)
-pub fn is_paused(gs_input: Input, global_state_policy_id: ByteArray) -> Bool {
-  expect
-    quantity_of(
-      gs_input.output.value,
-      global_state_policy_id,
-      constants.global_state_asset_name,
-    ) > 0
-  expect InlineDatum(gs_datum) = gs_input.output.datum
-  get_transfers_paused(builtin.unconstr_fields(gs_datum))
-}
-
-pub fn is_deactivated(
-  gs_input: Input,
-  global_state_policy_id: ByteArray,
-) -> Bool {
-  expect
-    quantity_of(
-      gs_input.output.value,
-      global_state_policy_id,
-      constants.global_state_asset_name,
-    ) > 0
-  expect InlineDatum(gs_datum) = gs_input.output.datum
-  get_deactivated(builtin.unconstr_fields(gs_datum))
-}
-
 /// Resolves GlobalState from wherever the caller says it is, authenticates it
 /// via the GS NFT, and returns its parsed inline datum.
 ///
@@ -576,10 +539,6 @@ const test_gs_policy_id: ByteArray =
 const test_admin_pkh: ByteArray =
   #"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-fn test_gs_input(transfers_paused: Bool) -> Input {
-  test_gs_input_with(transfers_paused, False)
-}
-
 fn test_gs_input_with(transfers_paused: Bool, deactivated: Bool) -> Input {
   let datum = GlobalStateDatum {
     transfers_paused,
@@ -630,21 +589,6 @@ test active_admin_traps_when_deactivated() fail {
     0,
     test_gs_policy_id,
   ) == test_admin_pkh
-}
-
-// H-1 regression: `is_paused` must read the `transfers_paused` Bool correctly
-// via UPLC builtins. The previous implementation in `transfer_logic_script`
-// passed the fields *list* to `unconstr_index` (missing a `head_list` step)
-// and crashed with UnConstrData on any call — making the pause gate a hard
-// revert. These two tests exercise both branches of the flag, and ensure
-// the fast-read still works after the datum reshape (TEL + admin added).
-
-test is_paused_returns_false_when_unpaused() {
-  is_paused(test_gs_input(False), test_gs_policy_id) == False
-}
-
-test is_paused_returns_true_when_paused() {
-  is_paused(test_gs_input(True), test_gs_policy_id) == True
 }
 
 // Shared fixture with a distinct value per field, so a mis-indexed read/write

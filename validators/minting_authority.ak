@@ -10,9 +10,11 @@ use cardano/certificate.{Certificate, RegisterCredential, UnregisterCredential}
 use cardano/transaction.{
   InlineDatum, Input, NoDatum, Output, OutputReference, Transaction,
 }
+use cip68
 use constants
 use denylist/absence.{verify_denylist_absence}
 use kyc/verify.{verify_kyc_proof}
+use types/cip68.{Cip68Datum} as types_cip68
 use types/global_state.{
   GlobalStateDatum, GlobalStateReferenced, GlobalStateSpent,
   gs_datum_from_location,
@@ -127,18 +129,6 @@ validator minting_authority_validator(
   /// signs for. Requiring the node to still live at the list's script address
   /// is what makes revocation stick.
   power_user_list_script_hash: ByteArray,
-  /// The CIP-68 REFERENCE NFT's asset name, under this same issuance policy.
-  ///
-  /// CIP-68 puts the reference token and the user token under one policy and
-  /// distinguishes them by asset-name label, so supporting it means the
-  /// issuance policy must be allowed to carry a second name. That relaxation is
-  /// deliberately narrow — see `only_permitted_assets_minted` for why a general
-  /// one would be a compliance bypass.
-  ///
-  /// Set it equal to `security_asset_name` to disable CIP-68 support entirely:
-  /// the security-asset arm of the allowlist matches first, so the reference
-  /// arm becomes unreachable.
-  reference_asset_name: ByteArray,
 ) {
   withdraw(
     redeemer: MintingAuthorityWithdrawRedeemer,
@@ -191,14 +181,13 @@ validator minting_authority_validator(
             fields,
           )
         and {
-          // Steady state mints supply and nothing else. The CIP-68 reference
-          // NFT is a registration-time artefact; allowing it here would let it
-          // be re-minted after the token is live.
+          // Steady state mints supply and nothing else. A CIP-68 metadata
+          // token is a registration-time artefact; allowing one here would let
+          // it be re-minted after the token is live.
           only_permitted_assets_minted(
             self,
             expected_issuance_policy_id,
             security_asset_name,
-            reference_asset_name,
             False,
           ),
           verify_mint_or_burn(
@@ -235,6 +224,7 @@ validator minting_authority_validator(
           global_state_policy_id,
           minting_logic_script_credential_hash,
           expected_issuance_policy_id,
+          security_asset_name,
           self,
         )
         // Decode GlobalState ONCE — same shape as the MintBurn call site
@@ -266,30 +256,21 @@ validator minting_authority_validator(
             self,
             issuance_policy_id,
             security_asset_name,
-            reference_asset_name,
             True,
           ),
-          // …and if one was minted, it must land somewhere defined.
+          // …and if a CIP-68 token was minted, it must land somewhere defined.
           //
-          // The `reference_asset_name != security_asset_name` half is what keeps the
-          // CIP-68-OFF configuration working. Setting the two equal is the documented
-          // way to disable CIP-68, and it does disable minting (the security arm of
-          // `only_permitted_assets_minted` matches first, so the reference arm is
-          // unreachable) — but it ALSO makes the quantity test below read the SECURITY
-          // token's mint, which is > 0 for every first mint. Without this guard the
-          // pinned-output check would then fire on the security token itself and demand
-          // exactly one of it, so a non-CIP-68 token could only ever be registered with
-          // a first mint of 1. Gate on CIP-68 actually being enabled, not on a quantity
-          // that aliasing makes ambiguous.
-          if and {
-            reference_asset_name != security_asset_name,
-            quantity_of(self.mint, issuance_policy_id, reference_asset_name) > 0,
-          } {
-            reference_nft_output_is_pinned(
+          // Gated on whether one was ACTUALLY minted, which is now an
+          // unambiguous question: the protected prefix and `security_asset_name`
+          // are disjoint by construction (`verify_registration_structure`
+          // asserts the security name is not protected), so this can never
+          // accidentally read the security token's own mint. A deployment that
+          // wants no CIP-68 token simply does not mint one, and this arm is
+          // skipped.
+          if cip68.value_has_protected(self.mint, issuance_policy_id) {
+            cip68_output_is_pinned(
               self,
               issuance_policy_id,
-              reference_asset_name,
-              security_asset_name,
               admin_credential_hash,
             )?
           } else {
@@ -442,6 +423,7 @@ validator minting_authority_validator(
           global_state_policy_id,
           minting_logic_script_credential_hash,
           expected_issuance_policy_id,
+          security_asset_name,
           self,
         )
         let gs_datum = gs_datum_from_location(
@@ -486,95 +468,121 @@ validator minting_authority_validator(
   }
 }
 
-/// INVARIANT 3 — see the header. Only the security asset may appear under the
-/// issuance policy. Checked as a SHAPE, not a sum: `quantity_of_policy_id(...)
-/// == 0` would also accept +N of the security asset netted against -N of
-/// another asset name under the same policy. `issuance_mint` constrains no
-/// asset names — it delegates entirely to this substandard — so a second name
-/// is possible, and it would be invisible to the destination checks below,
-/// which only ever inspect outputs carrying `security_asset_name`.
+/// INVARIANT 3 — see the header. Only two kinds of asset may appear under the
+/// issuance policy: the security token, and at most ONE CIP-68 metadata token.
+///
+/// Checked as a SHAPE, not a sum: `quantity_of_policy_id(...) == 0` would also
+/// accept +N of the security asset netted against -N of another name under the
+/// same policy. `issuance_mint` constrains no asset names — it delegates
+/// entirely to this substandard — so a second name is possible, and it would be
+/// invisible to the destination checks below, which only ever inspect outputs
+/// carrying `security_asset_name`.
+///
+/// The CIP-68 arm is keyed on the PROTECTED PREFIX (`constants.cip68_protected_prefix`),
+/// not on an exact name. That is what makes "only one CIP-68 token" a
+/// meaningful rule: with an exact-name parameter at most one name could ever
+/// match, so a second metadata token was unconstructible by accident rather
+/// than by design. With prefixes, `(100)Foo` and `(100)Bar` are both protected
+/// and both reach this check — so the count is enforced explicitly.
 fn only_permitted_assets_minted(
   self: Transaction,
   issuance_policy_id: ByteArray,
   security_asset_name: ByteArray,
-  reference_asset_name: ByteArray,
-  // Whether the CIP-68 reference NFT may be minted in THIS branch. True only
-  // for `RegisterMint`; see the call sites.
-  reference_mint_allowed: Bool,
+  // Whether a CIP-68 token may be minted in THIS branch. True only for
+  // `RegisterMint`; see the call sites.
+  cip68_mint_allowed: Bool,
 ) -> Bool {
-  list.all(
-    dict.to_pairs(assets.tokens(self.mint, issuance_policy_id)),
-    fn(minted) {
-      let Pair(asset_name, quantity) = minted
+  let minted = dict.to_pairs(assets.tokens(self.mint, issuance_policy_id))
+
+  // Every minted name is either the supply or one permitted metadata token.
+  // Returns False rather than trapping, so a caller sees the whole `and { }`
+  // fail with a labelled trace — the shape this branch has always had.
+  let every_name_permitted = list.all(
+    minted,
+    fn(entry) {
+      let Pair(asset_name, quantity) = entry
       if asset_name == security_asset_name {
         // Supply. Amount is governed by the cap, not here.
         True
       } else {
         and {
-          // The reference NFT may only appear where a branch says so.
-          reference_mint_allowed?,
-          (asset_name == reference_asset_name)?,
-          // An NFT, and exactly one of it. Without this the "metadata" name
-          // would be a second, uncapped supply under the same policy id.
+          // A metadata token may only appear where a branch says so.
+          cip68_mint_allowed?,
+          // …and only under a protected prefix. Any other name would be a
+          // second supply that every compliance scan — all of which filter on
+          // `security_asset_name` — would ignore.
+          cip68.is_protected(asset_name)?,
+          // An NFT, and exactly one of it.
           (quantity == 1)?,
         }
       }
     },
   )
+
+  // At most ONE metadata token per transaction. With an exact-name parameter
+  // this was unconstructible by accident — only one name could ever match. With
+  // prefixes, `(100)Foo` and `(100)Bar` both reach the arm above, so the rule
+  // has to be stated.
+  let protected_count = list.foldl(
+    minted,
+    0,
+    fn(entry, count) {
+      if entry.1st == security_asset_name {
+        count
+      } else {
+        count + 1
+      }
+    },
+  )
+
+  and {
+    every_name_permitted,
+    (protected_count <= 1)?,
+  }
 }
 
-/// THE CIP-68 REFERENCE NFT CUSTODY DECISION.
+/// THE CIP-68 METADATA TOKEN CUSTODY DECISION.
 ///
-/// The reference NFT is metadata, not value — it is exempt from the supply
-/// cap and from the denylist and KYC gates. It is minted exactly once, here,
-/// at registration (only `RegisterMint` may mint it, and registration is
-/// structurally a once-only event), and this function requires it to be
-/// ALONE in its own UTxO — quantity 1, no other asset of this policy
-/// co-located with it — at genesis. Its owner — the inline stake credential
-/// of that output — must be the GlobalState ADMIN credential, so the admin is
-/// the CIP-68 metadata authority by construction: updating the metadata is
-/// the admin spending this UTxO (base-layer owner consent) and re-outputting
-/// the NFT with the new datum. After `RotateAdmin` the outgoing admin hands
-/// the NFT to the new admin with an ordinary owner transfer (README).
+/// A CIP-68 token is metadata, not value — it is exempt from the supply cap and
+/// from the denylist and KYC gates. It is minted exactly once, here, at
+/// registration (only `RegisterMint` may mint one, and registration is
+/// structurally a once-only event), and this function pins three things about
+/// the UTxO it lands in:
 ///
-/// Every compliance scan in this substandard (denylist, KYC, seizure) is
-/// scoped to `security_asset_name` and never inspects the reference NFT, so
-/// its LATER movement is governed by the base layer's owner-consent check
-/// alone — nothing here re-vets a metadata update. Keeping it alone and at an
-/// issuer-controlled credential is therefore an OPERATIONAL rule (documented
-/// in the README), not a hot-path check: a per-transfer check guarding a
-/// once-in-a-lifetime asset is not worth its cost.
+///   * there is exactly ONE output carrying a protected token in the whole
+///     transaction — with `only_permitted_assets_minted` capping the mint at
+///     one, that makes the metadata token unique and locatable;
+///   * that output is WELL FORMED — ADA plus exactly that one token, nothing
+///     else co-located, and a correctly shaped CIP-68 datum
+///     (`cip68.output_is_well_formed`); and
+///   * its owner — the inline stake credential — is the GlobalState ADMIN, so
+///     the admin is the CIP-68 metadata authority by construction. Updating the
+///     metadata is the admin spending this UTxO (base-layer owner consent) and
+///     re-outputting the token with a new datum. After `RotateAdmin` the
+///     outgoing admin hands it over with an ordinary owner transfer (README).
 ///
 /// The base layer's `no_escape` already confines every token of this policy —
-/// the reference NFT included — to the programmable base, so the
-/// programmable-base payment-credential pin stays OUT of this function; only
-/// the quantity, the co-location and the owner (inline stake credential ==
-/// admin) are checked here. The datum itself is not inspected.
-fn reference_nft_output_is_pinned(
+/// the metadata token included — to the programmable base, so no
+/// payment-credential pin is needed here.
+///
+/// The SHAPE is re-checked on every later move by `transfer_logic_script`, and
+/// the seizure path refuses to touch a protected token at all. So these are
+/// invariants, not a one-time posture at genesis.
+fn cip68_output_is_pinned(
   self: Transaction,
   issuance_policy_id: ByteArray,
-  reference_asset_name: ByteArray,
-  security_asset_name: ByteArray,
   admin_credential_hash: ByteArray,
 ) -> Bool {
   let carriers = list.filter(
     self.outputs,
-    fn(output) {
-      quantity_of(output.value, issuance_policy_id, reference_asset_name) > 0
-    },
+    fn(output) { cip68.value_has_protected(output.value, issuance_policy_id) },
   )
   when carriers is {
     [output] -> {
       expect Some(Inline(owner)) = output.address.stake_credential
       and {
-        quantity_of(output.value, issuance_policy_id, reference_asset_name) == 1,
-        // The admin is the CIP-68 metadata authority: the NFT's owner (its
-        // inline stake credential, key or script) must be the GlobalState
-        // admin credential at registration.
-        utils.credential_hash(owner) == admin_credential_hash,
-        // Genesis-only: the reference NFT starts life alone in its own
-        // UTxO, never co-located with the first supply.
-        quantity_of(output.value, issuance_policy_id, security_asset_name) == 0,
+        cip68.output_is_well_formed(output, issuance_policy_id)?,
+        (utils.credential_hash(owner) == admin_credential_hash)?,
       }
     }
     _ -> False
@@ -600,8 +608,19 @@ fn verify_registration_structure(
   global_state_policy_id: ByteArray,
   minting_logic_script_credential_hash: ByteArray,
   expected_issuance_policy_id: ByteArray,
+  security_asset_name: ByteArray,
   self: Transaction,
 ) -> ByteArray {
+  // DEPLOYMENT SANITY, asserted once at registration because it can never
+  // become true later: the security token must not carry a protected prefix.
+  //
+  // If it did, every rule meant for metadata would fire on the supply itself —
+  // the seizure path would refuse every seizure, the transfer path would demand
+  // that each holding sit alone in its own UTxO with a CIP-68 datum, and
+  // `only_permitted_assets_minted` would cap the supply at one unit. The token
+  // would be inert, and nothing else in the protocol would explain why. This is
+  // the one place that misconfiguration can be caught, and it fails closed.
+  expect !cip68.is_protected(security_asset_name)
   let node_output = utils.safe_list_at(self.outputs, registry_node_output_index)
   let node_fields: List<Data> = builtin.unconstr_fields(
     utils.expect_inline_datum(node_output),
@@ -899,7 +918,10 @@ const test_security_asset_name: ByteArray = "SEC"
 
 // CIP-68 reference NFT name, under the SAME issuance policy. Real deployments
 // use the (100) label prefix; the validator treats it as an opaque name.
-const test_reference_asset_name: ByteArray = "REF"
+/// CIP-67 label `(100)` followed by "REF" — a genuinely PROTECTED name, which
+/// is what makes these fixtures exercise the prefix rules rather than an exact
+/// name comparison.
+const test_reference_asset_name: ByteArray = #"000643b0524546"
 
 const test_gs_policy_id: ByteArray =
   #"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -1415,29 +1437,6 @@ fn clean_dest_action() -> MintingLogicDestinationAction {
   }
 }
 
-/// `run_withdraw` with CIP-68 switched OFF the documented way: `reference_asset_name`
-/// set equal to `security_asset_name`. The reference arm of the mint allowlist then
-/// becomes unreachable, because the security arm matches first.
-fn run_withdraw_cip68_disabled(
-  redeemer: MintingAuthorityWithdrawRedeemer,
-  tx: Transaction,
-) {
-  minting_authority_validator.withdraw(
-    test_security_asset_name,
-    test_gs_policy_id,
-    test_registry_policy_id,
-    test_pu_policy_id,
-    test_proxy_hash,
-    test_issuance_policy_id,
-    test_denylist_script_hash,
-    test_pu_script_hash,
-    test_security_asset_name,
-    redeemer,
-    Script(test_authority_hash),
-    tx,
-  )
-}
-
 fn run_withdraw(redeemer: MintingAuthorityWithdrawRedeemer, tx: Transaction) {
   minting_authority_validator.withdraw(
     test_security_asset_name,
@@ -1448,7 +1447,6 @@ fn run_withdraw(redeemer: MintingAuthorityWithdrawRedeemer, tx: Transaction) {
     test_issuance_policy_id,
     test_denylist_script_hash,
     test_pu_script_hash,
-    test_reference_asset_name,
     redeemer,
     Script(test_authority_hash),
     tx,
@@ -1996,9 +1994,20 @@ fn make_reference_nft_output() -> Output {
       from_lovelace(2_000_000),
       from_asset(test_issuance_policy_id, test_reference_asset_name, 1),
     ),
-    datum: InlineDatum(builtin.constr_data(0, [])),
+    datum: InlineDatum(test_cip68_datum()),
     reference_script: None,
   }
+}
+
+/// A correctly shaped CIP-68 datum: `Constr 0 [metadata, version, extra]`.
+fn test_cip68_datum() -> Data {
+  let d = Cip68Datum {
+    metadata: [],
+    version: 1,
+    extra: builtin.constr_data(0, []),
+  }
+  let raw: Data = d
+  raw
 }
 
 /// A registration that also mints the CIP-68 reference NFT alongside the first
@@ -2024,17 +2033,18 @@ fn register_mint_with_reference_tx(extra_qty: Int, out: Output) -> Transaction {
   }
 }
 
-// REGRESSION. Disabling CIP-68 by aliasing `reference_asset_name` to
-// `security_asset_name` must not break an ordinary registration.
+// A registration with NO CIP-68 token: the way a deployment opts out now that
+// the metadata token is identified by PREFIX rather than by an exact-name
+// parameter. It simply does not mint one, and the pinned-output arm is skipped.
 //
-// The aliasing makes `quantity_of(self.mint, .., reference_asset_name)` read the
-// SECURITY token's mint, which is > 0 for every first mint. An earlier revision
-// gated the reference-NFT output check on that quantity alone, so the check fired
-// on the security token itself and demanded exactly one of it — meaning a
-// non-CIP-68 token could only ever be registered with a first mint of 1. A mint of
-// 1_000 is the case that exposes it.
-test register_mint_with_cip68_disabled_allows_a_multi_unit_first_mint() {
-  run_withdraw_cip68_disabled(
+// This replaces an older regression that disabled CIP-68 by ALIASING
+// `reference_asset_name` to `security_asset_name`. That mechanism is gone with
+// the parameter: aliasing was what made "was a metadata token minted?"
+// ambiguous, and the prefix rules plus the not-protected assertion on
+// `security_asset_name` make the two sets disjoint by construction. A multi-unit
+// first mint is kept as the case that exposed the old bug.
+test register_mint_without_a_cip68_token_allows_a_multi_unit_first_mint() {
+  run_withdraw(
     register_mint_redeemer(1_000),
     make_register_mint_tx(
       1_000,
@@ -2094,19 +2104,21 @@ test register_mint_rejects_a_reference_quantity_above_one() {
 }
 
 /// NEGATIVE TWIN of `register_mint_may_also_mint_the_cip68_reference_nft`.
-/// THE CIP-68 CUSTODY DECISION: the reference NFT must start life ALONE in
+/// THE CIP-68 CUSTODY DECISION: the metadata token must start life ALONE in
 /// its own UTxO. Here it shares ONE output with the first supply instead —
 /// `co_located_dest` carries both `test_reference_asset_name` and 1_000 of
-/// `test_security_asset_name` — which `reference_nft_output_is_pinned`'s new
-/// genesis-only conjunct (`quantity_of(.., security_asset_name) == 0`)
-/// exists to catch.
+/// `test_security_asset_name`.
 ///
-/// Rejection is a clean `False`, not a trap: `reference_nft_output_is_pinned`
-/// returns a `Bool` through `?` (trace-on-false, not `expect`) into the
-/// `RegisterMint` branch's `and { }`, so a failing conjunct there just makes
-/// the whole branch — and `withdraw` — return `False`. Hence `!run_withdraw`,
-/// not `fail`.
-test register_mint_rejects_a_reference_nft_co_located_with_supply() {
+/// FAILURE MODE CHANGED, deliberately, when the protected-prefix rules landed.
+/// The co-location rule used to be a `quantity_of(.., security_asset_name) == 0`
+/// conjunct inside the pinning function, which returned a clean `False` into the
+/// branch's `and { }` — hence `!run_withdraw` originally. It is now subsumed by
+/// `cip68.output_is_well_formed`, which asserts the whole value structurally
+/// (`expect [Pair(ada, _), Pair(policy, names)]` … `expect [Pair(name, 1)]`) and
+/// therefore TRAPS. The accepted set is identical — this transaction was
+/// rejected before and is rejected now — so the test keeps its meaning and
+/// changes only its annotation, `!` to `fail`.
+test register_mint_rejects_a_reference_nft_co_located_with_supply() fail {
   let amount = 1_000
   let base = make_register_mint_tx(
     amount,
@@ -2121,7 +2133,7 @@ test register_mint_rejects_a_reference_nft_co_located_with_supply() {
       from_asset(test_issuance_policy_id, test_reference_asset_name, 1),
     ),
   }
-  !run_withdraw(
+  run_withdraw(
     register_mint_redeemer(amount),
     Transaction {
       ..base,
@@ -2791,7 +2803,6 @@ test publish_accepts_credential_registration() {
     test_issuance_policy_id,
     test_denylist_script_hash,
     test_pu_script_hash,
-    test_reference_asset_name,
     builtin.constr_data(0, []),
     RegisterCredential {
       credential: Script(test_authority_hash),
@@ -2819,7 +2830,6 @@ test publish_rejects_credential_deregistration() {
     test_issuance_policy_id,
     test_denylist_script_hash,
     test_pu_script_hash,
-    test_reference_asset_name,
     builtin.constr_data(0, []),
     UnregisterCredential {
       credential: Script(test_authority_hash),
@@ -2834,5 +2844,72 @@ test publish_rejects_credential_deregistration() {
       [],
       [],
     ),
+  )
+}
+
+// ── RED: the protected-prefix rules the current code does not yet enforce ────
+
+/// A registration whose CIP-68 output carries a datum that is not the CIP-68
+/// three-field constructor. The shape rule exists so the metadata token cannot
+/// be created holding something a CIP-68 reader cannot parse.
+test register_mint_rejects_a_cip68_output_with_a_malformed_datum() fail {
+  run_withdraw(
+    register_mint_redeemer(1_000),
+    register_mint_with_reference_tx(
+      1,
+      Output {
+        ..make_reference_nft_output(),
+        datum: InlineDatum(builtin.constr_data(0, [])),
+      },
+    ),
+  )
+}
+
+/// A registration whose CIP-68 output ALSO holds security tokens. Metadata must
+/// never carry value: every compliance scan is scoped to the security asset
+/// name and would not look at this UTxO.
+test register_mint_rejects_a_cip68_output_holding_security_tokens() fail {
+  run_withdraw(
+    register_mint_redeemer(1_000),
+    register_mint_with_reference_tx(
+      1,
+      Output {
+        ..make_reference_nft_output(),
+        value: merge(
+          make_reference_nft_output().value,
+          from_asset(test_issuance_policy_id, test_security_asset_name, 10),
+        ),
+      },
+    ),
+  )
+}
+
+/// `security_asset_name` must not itself carry a protected prefix. If it did,
+/// every seizure and every transfer of the security token would be refused —
+/// so the misconfiguration has to fail closed at registration, where it is
+/// still cheap, rather than silently later.
+fn run_withdraw_with_protected_security_name(
+  redeemer: MintingAuthorityWithdrawRedeemer,
+  tx: Transaction,
+) {
+  minting_authority_validator.withdraw(
+    #"000643b0534543",
+    test_gs_policy_id,
+    test_registry_policy_id,
+    test_pu_policy_id,
+    test_proxy_hash,
+    test_issuance_policy_id,
+    test_denylist_script_hash,
+    test_pu_script_hash,
+    redeemer,
+    Script(test_authority_hash),
+    tx,
+  )
+}
+
+test registration_rejects_a_protected_security_asset_name() fail {
+  run_withdraw_with_protected_security_name(
+    register_structural_redeemer(),
+    make_register_structural_tx(zero, [test_admin_hash]),
   )
 }

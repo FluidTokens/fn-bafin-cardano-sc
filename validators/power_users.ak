@@ -14,7 +14,9 @@ use cardano/transaction.{
   InlineDatum, Input, NoDatum, Output, OutputReference, Transaction, find_input,
 }
 use constants
-use types/global_state.{GlobalStateDatum, active_admin_from_ref_input}
+use types/global_state.{
+  GlobalStateDatum, active_admin_from_ref_input, gs_datum_from_ref_input,
+}
 use types/power_users.{
   AddPowerUser, Deinit, Init, MintRedeemer, ModifyPowerUser, PowerUser,
   RemovePowerUser, SpendRedeemer, StateTransition,
@@ -145,16 +147,36 @@ validator mint(
         }
       }
       Deinit { global_state_ref_input_index } -> {
-        let admin = active_admin_from_ref_input(
+        // POST-DECOMMISSION CLEANUP ONLY — same rule and the same reasoning as
+        // the denylist's `Deinit`, and here the consequence of getting it wrong
+        // is if anything broader.
+        //
+        // Burning this root is irreversible: `Init` is gated on a one-shot UTxO
+        // consumed at genesis, `AddPowerUser` needs an existing element as its
+        // anchor, and `power_user_linked_list_policy_id` is immutable in the
+        // GlobalState datum. So once the root is gone no operator can ever be
+        // added again — mint, burn, pause, unpause, seizure and sanctions all
+        // authenticate against a node of THIS list and would be lost for good.
+        // If transfers happened to be paused at that moment they stay paused
+        // forever, since unpausing needs a `can_pause` node.
+        //
+        // Requiring `deactivated` keeps the branch to its purpose: reclaiming
+        // the root's min-ADA after the token has been retired.
+        //
+        // `gs_datum_from_ref_input`, not `active_admin_from_ref_input`, for the
+        // reason given in `validators/denylist.ak`: the latter traps precisely
+        // on the state this branch requires.
+        let gs = gs_datum_from_ref_input(
           self.reference_inputs,
           global_state_ref_input_index,
           global_state_policy_id,
         )
         and {
+          gs.deactivated?,
           // L-6: Deinit must require admin signature. Without this, anyone
           // can burn the root NFT while the list is empty. Admin now comes
           // from GS datum (rotatable); previously compile-time owner.
-          must_be_signed_by_credential(self, admin),
+          must_be_signed_by_credential(self, gs.admin_credential_hash),
           dict.size(tokens(self.mint, policy_id)) == 1,
           // Only the root is spent, and `deinit` already requires the list to
           // be empty. Defence in depth beside the library's own scan — see the
@@ -811,9 +833,33 @@ test power_users_init_rejects_a_missing_nonce() fail {
   )
 }
 
-/// `Deinit` — burning the root. Admin-signed, and only on an empty list.
-test power_users_deinit_succeeds_for_the_admin_on_an_empty_list() {
+/// `Deinit` — burning the root. Admin-signed, on an empty list, and only once
+/// the protocol has been deactivated: the root can never be re-created (`Init`
+/// is nonce-gated to a UTxO spent at genesis) and `AddPowerUser` needs an
+/// existing element as its anchor, so burning it while the token is live would
+/// permanently destroy every operator role — mint, burn, pause, unpause,
+/// seizure and sanctions alike.
+test power_users_deinit_succeeds_for_the_admin_after_deactivation() {
   mint.mint(
+    t_gs_policy,
+    t_oref(99),
+    Deinit { global_state_ref_input_index: 0 },
+    t_pu_policy,
+    Transaction {
+      ..t_base_tx(),
+      inputs: [t_pu_root_input(0)],
+      reference_inputs: [t_gs_utxo(0, t_gs_datum(True))],
+      mint: from_asset(t_pu_policy, constants.linked_list_root_key, -1),
+      extra_signatories: [t_admin],
+    },
+  )
+}
+
+/// THE ATTACK the `deactivated` gate exists for: the same admin-signed
+/// `Deinit` against a LIVE protocol. `gs.deactivated?` is the first conjunct
+/// of the branch's `and { }`, so the validator returns False — hence `!`.
+test power_users_deinit_rejects_a_live_protocol() {
+  !mint.mint(
     t_gs_policy,
     t_oref(99),
     Deinit { global_state_ref_input_index: 0 },
@@ -829,9 +875,8 @@ test power_users_deinit_succeeds_for_the_admin_on_an_empty_list() {
 }
 
 /// Unsigned by the admin, the root cannot be burnt — otherwise anyone could
-/// destroy the operator list while it happened to be empty. `must_be_signed_
-/// by_credential` is the FIRST conjunct of the branch's `and { }`, so it
-/// short-circuits before `deinit` ever runs. Returns False, hence `!`.
+/// destroy the operator list once the protocol was decommissioned. Returns
+/// False, hence `!`.
 test power_users_deinit_rejects_a_missing_admin_signature() {
   !mint.mint(
     t_gs_policy,
@@ -841,7 +886,7 @@ test power_users_deinit_rejects_a_missing_admin_signature() {
     Transaction {
       ..t_base_tx(),
       inputs: [t_pu_root_input(0)],
-      reference_inputs: [t_gs_utxo(0, t_gs_datum(False))],
+      reference_inputs: [t_gs_utxo(0, t_gs_datum(True))],
       mint: from_asset(t_pu_policy, constants.linked_list_root_key, -1),
     },
   )

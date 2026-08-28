@@ -14,6 +14,13 @@ jobs:
         with:
           version: v1.1.23
       - run: aiken fmt --check
-      - run: aiken check -D
+      # Run the test suite under a pseudo-terminal. `aiken check` switches to
+      # JSON output when stdout is not a TTY — which a CI log is not — and in
+      # that mode it prints no diagnostics at all: a failing test shows up as a
+      # bare non-zero exit with no assertion, no trace and no test name. The
+      # job fails correctly either way; this is purely so the log says WHY.
+      # `script -e` propagates the child's exit code (util-linux, present on
+      # ubuntu-latest).
+      - run: script -q -e -c "aiken check -D" /dev/null
       - run: aiken build
       - run: git diff --exit-code -- plutus.json

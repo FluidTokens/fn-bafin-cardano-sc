@@ -17,9 +17,7 @@ use types/denylist.{
   AddToDenylist, Deinit, Denylist, Init, MintRedeemer, RemoveFromDenylist,
   SpendRedeemer, StateTransition,
 }
-use types/global_state.{
-  GlobalStateDatum, active_admin_from_ref_input, gs_datum_from_ref_input,
-}
+use types/global_state.{GlobalStateDatum, gs_datum_from_ref_input}
 use types/power_users.{PowerUser}
 use utils.{must_be_signed_by_credential, quantity_of_policy_id}
 
@@ -134,13 +132,41 @@ validator mint(
         }
       }
       Deinit { global_state_ref_input_index } -> {
-        let admin = active_admin_from_ref_input(
+        // POST-DECOMMISSION CLEANUP ONLY.
+        //
+        // Burning the root is irreversible in both directions: `Init` is gated
+        // on a one-shot UTxO consumed at genesis, so a root can never be
+        // re-created, and `denylist_linked_list_policy_id` is immutable in the
+        // GlobalState datum — no spend branch writes it — so GlobalState can
+        // never be pointed at a replacement list either.
+        //
+        // What that costs while the protocol is LIVE: every movement of the
+        // security token needs a covering node of THIS list as a reference
+        // input — the transfer path, the seizure path and every mint
+        // destination all go through `lib/denylist/absence.ak`. With no root
+        // there is no element to cover anything, so a `Deinit` on a live
+        // protocol permanently freezes the register while the token still
+        // reports itself active. That is a worse state than decommissioning,
+        // because it is invisible: `deactivated` stays False.
+        //
+        // Requiring `deactivated` first forces the two irreversible decisions
+        // into the only honest order — retire the token, then dismantle its
+        // lists — and makes this branch what its name suggests: cleanup, not a
+        // kill switch.
+        //
+        // Read with `gs_datum_from_ref_input`, NOT `active_admin_from_ref_input`:
+        // the latter traps on a deactivated protocol, which is exactly the
+        // state this branch now requires. The GlobalState UTxO can no longer be
+        // spent once deactivated, but it is still readable as a reference
+        // input, so the admin credential remains available here.
+        let gs = gs_datum_from_ref_input(
           self.reference_inputs,
           global_state_ref_input_index,
           global_state_policy_id,
         )
         and {
-          must_be_signed_by_credential(self, admin),
+          gs.deactivated?,
+          must_be_signed_by_credential(self, gs.admin_credential_hash),
           dict.size(tokens(self.mint, policy_id)) == 1,
           // Only the root is spent, and `deinit` already requires the list to
           // be empty. See the note on the Add branch for why this count is

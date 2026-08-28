@@ -106,10 +106,6 @@ const authority_hash: ByteArray =
 
 /// CIP-113 programmable-logic-base script — the shared payment credential of
 /// every compliant token UTxO.
-/// The CIP-68 reference NFT's asset name, under the same issuance policy as
-/// the security asset.
-const reference_name: ByteArray = "REF"
-
 const plb_hash: ByteArray =
   #"05050505050505050505050505050505050505050505050505050505"
 
@@ -695,7 +691,6 @@ fn run_authority(
     issuance_policy,
     denylist_script_hash,
     pu_script_hash,
-    reference_name,
     redeemer,
     Script(authority_hash),
     tx,
@@ -1070,9 +1065,51 @@ test denylist_init_rejects_a_missing_nonce() fail {
   )
 }
 
-/// `Deinit` — burning the root. Admin-signed, and only on an empty list.
-test denylist_deinit_succeeds_for_the_admin_on_an_empty_list() {
+// ============================================================================
+// PROPERTY: the sanctions list can only be dismantled AFTER the token has been
+// decommissioned.
+// ============================================================================
+//
+// THE DEFECT. `Deinit` used to require only the admin's signature on an empty
+// list. Burning the root is irreversible — `Init` is nonce-gated to a UTxO
+// spent at genesis, and the GlobalState datum's denylist policy id is
+// immutable — while EVERY movement of the security token needs a covering node
+// of this list as a reference input. So one admin signature could permanently
+// freeze the register with the token still reporting itself active.
+//
+// THE GUARD. `gs.deactivated?` is now the first conjunct of the branch, read
+// via `gs_datum_from_ref_input` (`active_admin_from_ref_input` traps on exactly
+// the state the branch now requires). Retire the token first, then dismantle
+// its lists.
+
+/// `Deinit` — burning the root. Admin-signed, on an empty list, and only once
+/// the protocol has been deactivated.
+test denylist_deinit_succeeds_for_the_admin_after_deactivation() {
   v_denylist.mint.mint(
+    gs_policy,
+    oref(99),
+    pu_script_hash,
+    DenylistDeinit { global_state_ref_input_index: 0 },
+    denylist_policy,
+    Transaction {
+      ..base_tx(),
+      inputs: [dl_root_input(0)],
+      reference_inputs: [
+        gs_utxo(0, 2_000_000, gs_datum(False, True, False, False)),
+      ],
+      mint: from_asset(denylist_policy, constants.linked_list_root_key, -1),
+      extra_signatories: [admin],
+    },
+  )
+}
+
+/// THE ATTACK, and the reason for the guard: the same admin-signed `Deinit`
+/// against a LIVE protocol. Accepting it would leave every holder unable to
+/// prove denylist absence — no transfer, no seizure, no mint destination —
+/// forever, with `deactivated` still False. A conjunct of an `and { }`, so the
+/// validator returns False rather than trapping.
+test denylist_deinit_rejects_a_live_protocol() {
+  !v_denylist.mint.mint(
     gs_policy,
     oref(99),
     pu_script_hash,
@@ -1091,7 +1128,7 @@ test denylist_deinit_succeeds_for_the_admin_on_an_empty_list() {
 }
 
 /// Unsigned by the admin, the root cannot be burnt — otherwise anyone could
-/// destroy the sanctions list while it happened to be empty.
+/// destroy the sanctions list once the protocol was decommissioned.
 test denylist_deinit_rejects_a_missing_admin_signature() {
   !v_denylist.mint.mint(
     gs_policy,
@@ -1103,7 +1140,7 @@ test denylist_deinit_rejects_a_missing_admin_signature() {
       ..base_tx(),
       inputs: [dl_root_input(0)],
       reference_inputs: [
-        gs_utxo(0, 2_000_000, gs_datum(False, False, False, False)),
+        gs_utxo(0, 2_000_000, gs_datum(False, True, False, False)),
       ],
       mint: from_asset(denylist_policy, constants.linked_list_root_key, -1),
     },
@@ -1617,7 +1654,8 @@ test mint_rejects_one_action_covering_both_credential_forms() fail {
 // ============================================================================
 
 /// A GlobalState-shaped datum with no GlobalState NFT traps in
-/// `global_state.is_paused` (lib/types/global_state.ak:345). The NFT is what
+/// `global_state.gs_datum_from_output`, which every resolver funnels through.
+/// The NFT is what
 /// makes GlobalState authentic, and that check is genuinely load-bearing:
 /// without it a forged GlobalState could forge `transfers_paused` and the
 /// denylist policy id itself.

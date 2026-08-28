@@ -45,3 +45,38 @@ pub const max_security_info_bytes = 4096
 // Maximum serialised (CBOR) size, in bytes, of a single trusted entity's
 // metadata value.
 pub const max_trusted_entity_metadata_bytes = 512
+
+// ============================================================================
+// CIP-68 protected asset-name prefix
+// ============================================================================
+// CIP-67 encodes an asset-name label as four bytes: `0x00 | label(20 bits) |
+// checksum(8 bits) | 0x00`. A name carrying the prefix below is METADATA, not
+// value — it is exempt from the supply cap and from the denylist and KYC gates,
+// and it must therefore be prevented from moving like value.
+//
+// ONE prefix, not a list. `(100)` is the only CIP-68 label that denotes a
+// metadata token; the USER-token labels — `(222)` `#"000de140"`, `(333)`
+// `#"0014df10"`, `(444)` `#"001bc280"` — must never be treated as protected,
+// because the security token carries one of them and protecting it would refuse
+// every seizure and every ordinary transfer. So the set is closed at one, and a
+// single constant lets `cip68.is_protected` be one comparison instead of a fold
+// over a one-element list — on a check that runs per token per output on the
+// transfer path.
+//
+// `verify_registration_structure` asserts that `security_asset_name` does not
+// carry this prefix, so that misconfiguration fails closed at registration
+// rather than silently later.
+pub const cip68_protected_prefix: ByteArray = #"000643b0"
+
+/// Length of `cip68_protected_prefix`, in bytes.
+///
+/// CIP-67 fixes an asset-name label at four bytes, so `cip68.is_protected` takes
+/// that many rather than measuring the prefix on every comparison — the same
+/// reason `linked_list_node_key_prefix_length` sits beside its prefix above.
+///
+/// The cost of fixing it: a prefix of any OTHER length would be compared against
+/// a four-byte slice, match nothing, and leave metadata tokens silently
+/// unprotected. `cip68_protected_prefix_has_the_fixed_length` in `lib/cip68.ak`
+/// is the tripwire — change one without the other and the test fails instead of
+/// the security property.
+pub const cip68_protected_prefix_length = 4

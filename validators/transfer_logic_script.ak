@@ -14,9 +14,11 @@ use cardano/certificate.{Certificate, RegisterCredential}
 use cardano/transaction.{
   InlineDatum, Input, NoDatum, Output, OutputReference, Transaction,
 }
+use cip68
 use compliance
 use constants
 use kyc/verify.{membership_leaf_key, membership_leaf_value}
+use types/cip68.{Cip68Datum} as types_cip68
 use types/global_state.{
   GlobalStateDatum, GlobalStateLocation, GlobalStateReferenced, GlobalStateSpent,
   gs_datum_from_location,
@@ -82,19 +84,17 @@ validator transfer_logic_validator(
     // 1. Resolve and AUTHENTICATE GlobalState, then read every flag from the
     //    one parsed datum.
     //
-    //    This needs the full datum anyway — for the TEL, the denylist policy id
-    //    and the two KYC flags — so the cheap first-field readers
-    //    (`is_paused` / `is_deactivated`) buy nothing here and cost real work:
-    //    each re-scans the value for the GlobalState NFT and re-decodes the
-    //    datum. On the hot path that was two NFT scans and three datum decodes
-    //    for one UTxO.
+    //    One resolve, one NFT check, one decode. An earlier revision reached
+    //    for single-field readers to test the pause and deactivation flags
+    //    before decoding, which cost a second NFT scan and a second decode of
+    //    the same UTxO on the hot path — this handler needs the full datum
+    //    anyway, for the TEL, the denylist policy id and the two KYC flags.
     //
     //    It is also the safer shape. A bare `expect gs: GlobalStateDatum`
-    //    authenticates NOTHING — it only checks that the bytes parse — so the
-    //    previous form depended on `is_paused` having run first to prove the
-    //    NFT was there. `gs_datum_from_ref_input` does the NFT check (`== 1`,
-    //    stricter than the `> 0` those readers use) and the parse together, so
-    //    the authentication cannot be separated from the read by a later edit.
+    //    authenticates NOTHING — it only checks that the bytes parse — so a
+    //    read split from its authentication depends on some earlier line having
+    //    proved the NFT was there. `gs_datum_from_location` does the NFT check
+    //    (`== 1`) and the parse together, so a later edit cannot separate them.
     let gs_datum: GlobalStateDatum = gs_datum_from_location(
       self.inputs,
       self.reference_inputs,
@@ -153,7 +153,31 @@ validator transfer_logic_validator(
         self.outputs,
         [],
         fn(output, result) {
-          if quantity_of(output.value, issuance_policy_id, security_asset_name) > 0 {
+          // ONE lookup of this policy's tokens per output, answering both
+          // questions this fold has: is the output a destination, and does it
+          // carry a CIP-68 metadata token whose shape must hold?
+          let policy_tokens = assets.tokens(output.value, issuance_policy_id)
+
+          // The metadata token's shape is an INVARIANT, not a posture at
+          // genesis. `minting_authority` pins it when it is minted; this is
+          // what keeps it true afterwards, because the ordinary transfer path
+          // is how a metadata update happens — the owner spends the UTxO and
+          // re-outputs the token with a new datum. Without this, an update
+          // could co-locate it with supply or write an unparseable datum.
+          expect
+            cip68.enforce_if_protected(
+              policy_tokens,
+              output,
+              issuance_policy_id,
+            )
+
+          let security_quantity = when
+            dict.get(policy_tokens, security_asset_name)
+          is {
+            Some(quantity) -> quantity
+            None -> 0
+          }
+          if security_quantity > 0 {
             // Destinations must sit INSIDE the programmable-logic base.
             // Guaranteed by the base layer: `issuance_mint`'s `no_escape`
             // bars this policy from any non-PLB output on a mint, and
@@ -1116,4 +1140,112 @@ bench transfer_cost_by_party_count(n via n_parties) {
   // a validator run that actually rejected the transaction, which would make
   // every downstream cost-scaling conclusion meaningless.
   expect run_transfer(redeemer, tx)
+}
+
+// ── CIP-68 shape is an invariant, not a posture at genesis ───────────────────
+//
+// `minting_authority` pins the metadata token's UTxO when it is minted. That
+// alone would make the shape true only at birth: the ordinary transfer path is
+// how a metadata update happens (the owner spends the UTxO and re-outputs the
+// token with a new datum), so without a check here an update could co-locate
+// the token with supply, or write a datum no CIP-68 reader can parse, and
+// nothing would object.
+//
+// The check therefore lives in the output fold this handler already runs, and
+// costs one prefix comparison per token of the policed policy.
+
+/// CIP-67 label `(100)` — a protected, metadata name under the policed policy.
+const t_cip68_name: ByteArray = #"000643b04d657461"
+
+fn t_cip68_datum() -> Data {
+  let d = Cip68Datum {
+    metadata: [],
+    version: 1,
+    extra: builtin.constr_data(0, []),
+  }
+  let raw: Data = d
+  raw
+}
+
+/// The metadata UTxO: ADA + exactly the one protected token, owned by `stake`.
+fn t_cip68_output(stake_hash: ByteArray, datum: Data) -> Output {
+  Output {
+    address: Address {
+      payment_credential: Script(t_plb_hash),
+      stake_credential: Some(Inline(VerificationKey(stake_hash))),
+    },
+    value: merge(
+      from_lovelace(2_000_000),
+      from_asset(t_issuance_policy, t_cip68_name, 1),
+    ),
+    datum: InlineDatum(datum),
+    reference_script: None,
+  }
+}
+
+/// A metadata update: the owner spends the metadata UTxO and re-outputs it.
+/// No security token moves, so there are no parties to vet.
+fn t_metadata_update_tx(output: Output) -> Transaction {
+  Transaction {
+    ..t_transfer_tx(False, False, False, False),
+    inputs: [
+      Input {
+        output_reference: t_out_ref(20),
+        output: t_cip68_output(t_sender_stake, t_cip68_datum()),
+      },
+    ],
+    outputs: [output],
+  }
+}
+
+fn t_metadata_redeemer() -> TransferLogicScriptWithdrawRedeemer {
+  TransferLogicScriptWithdrawRedeemer {
+    global_state_location: GlobalStateReferenced {
+      global_state_ref_input_index: 1,
+    },
+    actions_for_each_input: [],
+    destination_actions: [],
+  }
+}
+
+/// POSITIVE CONTROL: a well-formed metadata update is accepted.
+test transfer_accepts_a_well_formed_cip68_output() {
+  run_transfer(
+    t_metadata_redeemer(),
+    t_metadata_update_tx(t_cip68_output(t_dest_stake, t_cip68_datum())),
+  )
+}
+
+/// THE ATTACK: the update writes a datum that is not the CIP-68 constructor.
+test transfer_rejects_a_malformed_cip68_datum() fail {
+  run_transfer(
+    t_metadata_redeemer(),
+    t_metadata_update_tx(
+      t_cip68_output(t_dest_stake, builtin.constr_data(0, [])),
+    ),
+  )
+}
+
+/// THE ATTACK: the update co-locates the metadata token with security tokens,
+/// which would carry value through a path that never inspects it.
+///
+/// The output DOES carry the security token, so it is a destination and must be
+/// vetted — the redeemer therefore supplies a destination action, and the
+/// denylist root at reference index 2 covers every key. Without that this test
+/// would trap on the missing action instead of on the shape, and would pass
+/// while proving nothing.
+test transfer_rejects_a_cip68_output_holding_security_tokens() fail {
+  let out = t_cip68_output(t_dest_stake, t_cip68_datum())
+  run_transfer(
+    TransferLogicScriptWithdrawRedeemer {
+      ..t_metadata_redeemer(),
+      destination_actions: [t_dest_action()],
+    },
+    t_metadata_update_tx(
+      Output {
+        ..out,
+        value: merge(out.value, from_asset(t_issuance_policy, t_sec_name, 5)),
+      },
+    ),
+  )
 }
