@@ -82,19 +82,17 @@ validator transfer_logic_validator(
     // 1. Resolve and AUTHENTICATE GlobalState, then read every flag from the
     //    one parsed datum.
     //
-    //    This needs the full datum anyway — for the TEL, the denylist policy id
-    //    and the two KYC flags — so the cheap first-field readers
-    //    (`is_paused` / `is_deactivated`) buy nothing here and cost real work:
-    //    each re-scans the value for the GlobalState NFT and re-decodes the
-    //    datum. On the hot path that was two NFT scans and three datum decodes
-    //    for one UTxO.
+    //    One resolve, one NFT check, one decode. An earlier revision reached
+    //    for single-field readers to test the pause and deactivation flags
+    //    before decoding, which cost a second NFT scan and a second decode of
+    //    the same UTxO on the hot path — this handler needs the full datum
+    //    anyway, for the TEL, the denylist policy id and the two KYC flags.
     //
     //    It is also the safer shape. A bare `expect gs: GlobalStateDatum`
-    //    authenticates NOTHING — it only checks that the bytes parse — so the
-    //    previous form depended on `is_paused` having run first to prove the
-    //    NFT was there. `gs_datum_from_ref_input` does the NFT check (`== 1`,
-    //    stricter than the `> 0` those readers use) and the parse together, so
-    //    the authentication cannot be separated from the read by a later edit.
+    //    authenticates NOTHING — it only checks that the bytes parse — so a
+    //    read split from its authentication depends on some earlier line having
+    //    proved the NFT was there. `gs_datum_from_location` does the NFT check
+    //    (`== 1`) and the parse together, so a later edit cannot separate them.
     let gs_datum: GlobalStateDatum = gs_datum_from_location(
       self.inputs,
       self.reference_inputs,
