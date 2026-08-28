@@ -12,23 +12,18 @@ use types/cip68.{Cip68Datum}
 
 /// Does `asset_name` carry one of the protected CIP-67 label prefixes?
 ///
-/// The slice width is the FIXED `constants.protected_prefix_length` — CIP-67
-/// labels are always four bytes — rather than each prefix's own length, which
-/// would re-measure a constant on every comparison. That matters because this
-/// runs once per token of the issuance policy per output on the transfer path.
-/// The entries are held to that length by
-/// `protected_prefixes_are_all_the_fixed_length` below.
+/// One comparison against one constant. There is exactly one CIP-68 metadata
+/// label, `(100)`, so this is not a set membership test — and the slice width is
+/// the FIXED `constants.cip68_protected_prefix_length` rather than the prefix's
+/// measured length. Both matter because this runs once per token of the issuance
+/// policy per output on the transfer path. The constant is held to that length
+/// by `cip68_protected_prefix_has_the_fixed_length` below.
 ///
 /// `bytearray.take` on a name shorter than the slice returns the whole (short)
 /// name, which cannot equal a four-byte prefix — so a malformed or truncated
 /// asset name is simply unprotected rather than a trap.
 pub fn is_protected(asset_name: ByteArray) -> Bool {
-  list.any(
-    constants.protected_prefixes,
-    fn(prefix) {
-      bytearray.take(asset_name, constants.protected_prefix_length) == prefix
-    },
-  )
+  bytearray.take(asset_name, constants.cip68_protected_prefix_length) == constants.cip68_protected_prefix
 }
 
 /// Does `value` carry any protected token under `issuance_policy_id`?
@@ -64,16 +59,20 @@ pub fn value_has_protected(value: Value, issuance_policy_id: PolicyId) -> Bool {
 ///     `metadata` a map and `version` an integer. Contents are not inspected;
 ///     see the type's doc comment for why.
 ///
-/// ADA is the first entry by construction: a `Value` is keyed by policy id and
-/// ADA's is the empty bytestring, which sorts first. The same invariant the
-/// linked-list library's element authentication relies on.
+/// The ADA entry is DROPPED rather than compared. A `Value` is keyed by policy
+/// id, ADA's is the empty bytestring so it always sorts first, and every UTxO
+/// carries lovelace — so `dict.expect_tail` is both cheaper than an equality
+/// check and no weaker. The same invariant the linked-list library's element
+/// authentication and CIP-113's own `validate_directory_node_output` rely on.
+/// Exactly one policy may remain after the drop.
 pub fn output_is_well_formed(
   output: Output,
   issuance_policy_id: PolicyId,
 ) -> Bool {
-  expect [Pair(ada_policy, _lovelace),
-        Pair(policy, names)] = output.value |> to_dict |> dict.to_pairs
-  expect ada_policy == #""
+  expect [Pair(policy, names)] = output.value
+    |> to_dict
+    |> dict.expect_tail
+    |> dict.to_pairs
   expect policy == issuance_policy_id
 
   expect [Pair(asset_name, 1)] = dict.to_pairs(names)
@@ -126,15 +125,13 @@ test cip68_short_name_is_not_protected() {
 }
 
 /// TRIPWIRE for the fixed slice width. `is_protected` compares a
-/// `protected_prefix_length`-byte slice, so an entry of any other length would
-/// match nothing at all and leave that token silently unprotected — a hole that
-/// no other test would notice, because every test would simply see "not
-/// protected" and agree. Add a wrong-length prefix and this fails instead.
-test protected_prefixes_are_all_the_fixed_length() {
-  list.all(
-    constants.protected_prefixes,
-    fn(prefix) { bytearray.length(prefix) == constants.protected_prefix_length },
-  )
+/// `cip68_protected_prefix_length`-byte slice, so a prefix of any other length
+/// would match nothing at all and leave metadata tokens silently unprotected — a
+/// hole no other test would notice, because every test would simply see "not
+/// protected" and agree. Change one constant without the other and this fails
+/// instead of the security property.
+test cip68_protected_prefix_has_the_fixed_length() {
+  bytearray.length(constants.cip68_protected_prefix) == constants.cip68_protected_prefix_length
 }
 
 // ── output_is_well_formed ────────────────────────────────────────────────────

@@ -261,7 +261,7 @@ validator minting_authority_validator(
           // …and if a CIP-68 token was minted, it must land somewhere defined.
           //
           // Gated on whether one was ACTUALLY minted, which is now an
-          // unambiguous question: `protected_prefixes` and `security_asset_name`
+          // unambiguous question: the protected prefix and `security_asset_name`
           // are disjoint by construction (`verify_registration_structure`
           // asserts the security name is not protected), so this can never
           // accidentally read the security token's own mint. A deployment that
@@ -478,7 +478,7 @@ validator minting_authority_validator(
 /// invisible to the destination checks below, which only ever inspect outputs
 /// carrying `security_asset_name`.
 ///
-/// The CIP-68 arm is keyed on the PROTECTED PREFIX (`constants.protected_prefixes`),
+/// The CIP-68 arm is keyed on the PROTECTED PREFIX (`constants.cip68_protected_prefix`),
 /// not on an exact name. That is what makes "only one CIP-68 token" a
 /// meaningful rule: with an exact-name parameter at most one name could ever
 /// match, so a second metadata token was unconstructible by accident rather

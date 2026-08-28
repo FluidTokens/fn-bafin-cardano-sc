@@ -347,14 +347,16 @@ KYC gates, because none of those questions mean anything about a metadata record
 only safe if such a token can never be moved *like* value — which is what the protected-prefix rules
 enforce.
 
-**Protected prefixes.** `constants.protected_prefixes` lists the CIP-67 asset-name labels that mark a
-token as metadata. It ships with exactly one entry, `(100)` (`#"000643b0"`), the reference token. A
-name under the issuance policy carrying one of those prefixes is *protected*.
+**The protected prefix.** `constants.cip68_protected_prefix` is the CIP-67 asset-name label that marks
+a token as metadata: `(100)` = `#"000643b0"`. A name under the issuance policy carrying it is
+*protected*. One prefix, not a list — `(100)` is the only CIP-68 label that denotes a metadata token,
+so the set is closed at one and the check is a single comparison rather than a fold.
 
 The user-token labels — `(222)` `#"000de140"`, `(333)` `#"0014df10"`, `(444)` `#"001bc280"` — must
-never be listed. The security token carries one of them, and protecting it would refuse every
-seizure and every ordinary transfer. Registration asserts that `security_asset_name` is not
-protected, so that misconfiguration fails closed at the one moment it is still cheap to catch.
+never be protected. The security token carries one of them, and protecting it would refuse every
+seizure and every ordinary transfer. Registration asserts that `security_asset_name` does not carry
+the protected prefix, so that misconfiguration fails closed at the one moment it is still cheap to
+catch.
 
 Three rules follow, and together they are an invariant rather than a posture at genesis:
 

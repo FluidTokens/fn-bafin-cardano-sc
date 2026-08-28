@@ -811,14 +811,20 @@ and getting one wrong would have refused every ordinary transfer.
 
 ### The fix
 
-Identify metadata tokens by **kind**, not by name. `constants.protected_prefixes` lists the CIP-67
-labels that mark a token as metadata — `(100)` (`#"000643b0"`) and nothing else — and
-`lib/cip68.ak` holds the three predicates the validators share.
+Identify metadata tokens by **kind**, not by name. `constants.cip68_protected_prefix` is the CIP-67
+label that marks a token as metadata — `(100)`, and nothing else is or can be — and `lib/cip68.ak`
+holds the predicates the validators share.
 
 ```aiken
 // lib/constants.ak
-pub const protected_prefixes: List<ByteArray> = [#"000643b0"]
+pub const cip68_protected_prefix: ByteArray = #"000643b0"
+pub const cip68_protected_prefix_length = 4
 ```
+
+A single constant rather than a list, on review feedback: `(100)` is the only CIP-68 metadata label,
+so `is_protected` is one comparison against one constant instead of a fold over a one-element list.
+On a check that runs per token per output on the transfer path that is not cosmetic — the predicate
+dropped from 5.91 K memory / 1.29 M CPU to **200 memory / 16.1 K CPU**.
 
 **The security token may not be protected.** `verify_registration_structure` asserts
 `!cip68.is_protected(security_asset_name)`. This is what removes the aliasing trap: the protected set
@@ -856,11 +862,16 @@ this a destination?" and "does this carry metadata?" — where it previously did
 | | memory | CPU |
 |---|---|---|
 | 1 sender + 1 destination, before | 613.12 K | 182.77 M |
-| 1 sender + 1 destination, after | 630.92 K | 187.58 M |
-| | **+2.9 %** | **+2.6 %** |
+| 1 sender + 1 destination, after | 626.45 K | 186.34 M |
+| | **+2.2 %** | **+1.9 %** |
 
-Growing to roughly +5 % memory at 30 parties per side. That is the price of the invariant, paid by
+Growing to roughly +4 % memory at 30 parties per side. That is the price of the invariant, paid by
 every transfer; it was judged worth it because the alternative is a rule that is true only at genesis.
+
+Two review-driven changes brought that figure down from an initial +2.9 % / +2.6 %: the single
+constant above, and dropping the ADA entry from the value with `dict.expect_tail` instead of
+comparing it — every UTxO carries lovelace and a `Value` sorts the empty policy id first, so the
+comparison was provably redundant.
 
 ### Tests
 
@@ -1117,7 +1128,7 @@ datum at genesis and immutable thereafter:
 | `third_party_transfer_logic_script` | refuses protected inputs | `UpgradeRegistryNode` — registry field 4 |
 
 The two list mint hashes were verified **not** to move under fix 13, so adding
-`constants.protected_prefixes` perturbs nothing that does not read it.
+`constants.cip68_protected_prefix` perturbs nothing that does not read it.
 
 Every other validator's *source* is byte-identical, so every other **unapplied** hash in
 `plutus.json` is unchanged. But the two changed hashes are the two list **policy ids**, and those are
