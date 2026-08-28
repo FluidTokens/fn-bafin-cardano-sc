@@ -222,7 +222,7 @@ exact order the blueprint (`plutus.json`) declares them; apply top to bottom.
 | 7 | `global_state.global_state_spend_validator` (spend) | `security_asset_name`, `issuance_policy_id`, `global_state_policy_id`, `power_user_list_script_hash` | Operator choice; the hash of `minting_logic_validator` (row 6) — the **issuance policy ID**, i.e. the security token's policy ID; row 1; the hash of `power_users_validator` (row 3). |
 | 8 | `transfer_logic_script.transfer_logic_validator` | `security_asset_name`, `global_state_policy_id`, `expected_issuance_policy_id`, `denylist_script_hash` | Operator choice; row 1; the hash of `minting_logic_validator` (row 6); the hash of `denylist_validator` (row 5). |
 | 9 | `third_party_transfer_logic_script.third_party_transfer_logic_validator` | `security_asset_name`, `global_state_policy_id`, `expected_issuance_policy_id`, `denylist_script_hash`, `power_user_list_script_hash` | Operator choice; row 1; row 6's hash; row 5's hash; row 3's hash. (The power-users policy id is read from the GlobalState datum at run time, not compiled in.) |
-| 10 | `minting_authority.minting_authority_validator` | `security_asset_name`, `global_state_policy_id`, `registry_policy_id`, `power_users_linked_list_policy_id`, `minting_logic_script_credential_hash`, `expected_issuance_policy_id`, `denylist_script_hash`, `power_user_list_script_hash`, `reference_asset_name` | Operator choice; row 1; Prerequisites; row 2's hash; row 6's hash; row 6's hash again (**must be identical to the previous value** — see below); row 5's hash; row 3's hash; operator choice (see below). |
+| 10 | `minting_authority.minting_authority_validator` | `security_asset_name`, `global_state_policy_id`, `registry_policy_id`, `power_users_linked_list_policy_id`, `minting_logic_script_credential_hash`, `expected_issuance_policy_id`, `denylist_script_hash`, `power_user_list_script_hash` | Operator choice; row 1; Prerequisites; row 2's hash; row 6's hash; row 6's hash again (**must be identical to the previous value** — see below); row 5's hash; row 3's hash. |
 
 ### What the derived parameters must equal
 
@@ -236,10 +236,14 @@ exact order the blueprint (`plutus.json`) declares them; apply top to bottom.
   all three are the hash of `minting_logic_script.minting_logic_validator`. The last two are two
   separate parameter slots of `minting_authority_validator` (row 10) and **must receive the
   identical value**; a deploy script should assert this rather than rely on it by construction.
-* `security_asset_name` / `reference_asset_name` — operator choices. Setting `reference_asset_name`
-  equal to `security_asset_name` disables the CIP-68 reference NFT: the security-asset arm of the
-  mint allowlist matches first, so the reference arm becomes unreachable (see the parameter doc
-  comments in [`validators/minting_authority.ak`](validators/minting_authority.ak)).
+* `security_asset_name` — an operator choice, with one constraint: it must **not** carry a protected
+  CIP-67 prefix (see [CIP-68 metadata tokens](#cip-68-metadata-tokens)). Registration asserts this
+  and fails closed if it is violated, because a protected supply name would make every rule meant
+  for metadata fire on the supply itself. Follow the CIP-68 label convention and the constraint is
+  automatic: `(333)` or `(444)` for the security token, never `(100)`.
+* There is **no** `reference_asset_name` parameter. The CIP-68 token is identified by its label
+  prefix, not by an exact name, so nothing has to be configured per deployment and no two validators
+  can drift apart on it.
 * `tx0` / `index0` / `init_input_out_ref` — one-shot genesis UTxOs, each spent once during
   initialisation (see [Initialising a token](#initialising-a-token)).
 
@@ -336,42 +340,53 @@ Neither is a defect; both bite when composing transactions:
   GlobalState, so they serialise against each other — roughly one such transaction per block. Batch
   administrative work instead of submitting it concurrently, and expect to rebuild on contention.
 
-### CIP-68 reference NFT custody
+### CIP-68 metadata tokens
 
-The CIP-68 reference NFT is holding metadata, not value. It is minted exactly once, at registration, and
-must start life **alone** in its own UTxO — no other asset of the issuance policy (including the
-first supply) co-located with it, and carrying its own min-ADA. Its owner — the inline stake
-credential of that output — **must be the GlobalState admin credential** at registration
-(`reference_nft_output_is_pinned` enforces it), so the admin is the CIP-68 metadata authority by
-construction. A metadata update is the admin spending that UTxO — an ordinary CIP-113 owner-consent
-transfer to the same address — and re-outputting the NFT with the new inline datum
-(`Constr 0 [metadata map, version, extra]`, per CIP-68); the datum content is not inspected on-chain.
-Because every compliance scan in this substandard (denylist, KYC, seizure) is scoped to
-`security_asset_name`, the reference NFT's later movement is governed by the base layer's
-owner-consent check alone — nothing in this repo re-vets a metadata update, and a seizure cannot
-alter the datum (the base layer requires datum identity per seized pair). Updates pass through the
-transfer logic's gates, so they are blocked while transfers are paused and after deactivation.
+A CIP-68 token is **metadata, not value**: it is exempt from the supply cap and from the denylist and
+KYC gates, because none of those questions mean anything about a metadata record. That exemption is
+only safe if such a token can never be moved *like* value — which is what the protected-prefix rules
+enforce.
+
+**Protected prefixes.** `constants.protected_prefixes` lists the CIP-67 asset-name labels that mark a
+token as metadata. It ships with exactly one entry, `(100)` (`#"000643b0"`), the reference token. A
+name under the issuance policy carrying one of those prefixes is *protected*.
+
+The user-token labels — `(222)` `#"000de140"`, `(333)` `#"0014df10"`, `(444)` `#"001bc280"` — must
+never be listed. The security token carries one of them, and protecting it would refuse every
+seizure and every ordinary transfer. Registration asserts that `security_asset_name` is not
+protected, so that misconfiguration fails closed at the one moment it is still cheap to catch.
+
+Three rules follow, and together they are an invariant rather than a posture at genesis:
+
+1. **At most one metadata token, minted once.** Only `RegisterMint` may mint a protected name, at
+   quantity exactly one, and at most one protected name per transaction. Steady-state mint and burn
+   refuse protected names outright, so a metadata token cannot be re-minted after the token is live.
+2. **Its UTxO holds ADA plus that token, and nothing else.** Checked when it is minted, and re-checked
+   on **every later move** by the transfer logic — because the transfer path is how a metadata update
+   happens. The datum must decode as CIP-68's `Constr 0 [metadata, version, extra]`; the contents are
+   not interpreted. The owner (the output's inline stake credential) must be the GlobalState admin
+   credential at registration, which is what makes the admin the metadata authority by construction.
+3. **The seizure path may not touch it.** A forced transfer is refused outright if any input carries a
+   protected token. Seizure moves value; metadata is out of its reach, so a `can_force_transfer`
+   operator cannot carry the token's metadata authority away under cover of an ordinary seizure.
+
+A metadata update is therefore the admin spending that UTxO — an ordinary CIP-113 owner-consent
+transfer — and re-outputting the token with a new inline datum, in the same shape. Updates pass
+through the transfer logic's gates, so they are blocked while transfers are paused and after
+deactivation.
+
 Operational rules:
 
-* Follow the CIP-68 label convention when choosing the asset names: `(100)` prefix for
-  `reference_asset_name`, `(333)` prefix for the fungible `security_asset_name` (the validators treat
-  both as opaque bytes).
-* Never co-locate the reference NFT with the first supply, or with any other output.
-* After `RotateAdmin`, the outgoing admin hands the reference NFT to the new admin with an ordinary
-  owner transfer (same address, new admin's stake credential) — the on-chain pin applies at
-  registration only.
-* **A seizure operator must never include the reference NFT's UTxO in a seizure transaction.** This
-  is an operational rule, **not enforced on chain** — and the exposure is deliberate and recorded:
-  because every compliance scan in the seizure validator is scoped to `security_asset_name`, a
-  `can_force_transfer` operator *can* move the reference NFT to an address of their choosing, with
-  no admin signature and no KYC or denylist check on the recipient. It cannot touch supply, the
-  register or any compliance gate — the reference NFT is metadata — but it does mean the admin's
-  CIP-68 metadata authority rests on that role being granted to trusted parties. Grant
-  `can_force_transfer` accordingly, and alert on any movement of the reference NFT. The rationale,
-  and the on-chain fix should this ever be revisited, are in
-  [`documents/security/security-fixes.md`](documents/security/security-fixes.md) §13.
-* The reference NFT cannot be burned. It is minted once, at registration, and no branch burns it, so
-  decommissioning leaves it in the admin's custody.
+* Follow the CIP-68 label convention: `(100)` for the metadata token, `(333)` or `(444)` for the
+  fungible security token. Rule 1 and the registration assertion both depend on it.
+* A deployment that wants no metadata token simply never mints one — there is nothing to configure.
+* After `RotateAdmin`, the outgoing admin hands the metadata token to the new admin with an ordinary
+  owner transfer (same address, new admin's stake credential); the owner pin applies at registration
+  only, while the shape rule keeps applying to every move.
+* The metadata token cannot be burned. It is minted once and no branch burns it, so decommissioning
+  leaves it in the admin's custody.
+* On a base layer at `9db7e06` or later, its inline datum must fit `max_inline_datum_bytes` (see
+  [What is delegated to the CIP-113 base layer](#what-is-delegated-to-the-cip-113-base-layer)).
 
 ### Execution budget and transaction sizing
 

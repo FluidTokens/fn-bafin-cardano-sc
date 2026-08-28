@@ -2,7 +2,7 @@
 
 An adversarial internal review of this token's compliance layer — the denylist, the KYC gates, and
 the transfer, seizure and minting logic — found eleven defects; a re-audit on 2026-08-28 found two
-more (12, fixed; 13, accepted by decision) and a set of items judged
+more (12 and 13, both fixed) and a set of items judged
 [not to warrant a code change](#acknowledged-and-deliberately-not-changed). Two were critical and reachable by
 any wallet with no prior position in the protocol. This document records each one: what was wrong,
 why it was wrong, how it was fixed, and why that fix rather than another.
@@ -37,7 +37,7 @@ the wrong asset name, a list root that did not link to the node being removed, a
 | [10](#10-the-membership-kyc-variant-bound-neither-policy-nor-network) | The membership KYC variant bound neither policy nor network | Info | Fixed |
 | [11](#11-the-power-user-authority-footgun-was-undocumented) | The power-user authority footgun was undocumented | Info | Fixed |
 | [12](#12-dismantling-either-linked-list-was-a-one-way-freeze-of-a-live-protocol) | Dismantling either linked list was a one-way freeze of a live protocol | Medium | Fixed |
-| [13](#13-the-seizure-path-can-take-the-cip-68-reference-nft) | The seizure path can take the CIP-68 reference NFT | Medium | **Accepted, by decision** |
+| [13](#13-cip-68-metadata-tokens-were-governed-by-an-exact-name-not-by-their-kind) | CIP-68 metadata tokens were governed by an exact name, not by their kind | Medium | Fixed |
 
 Findings 12 and 13 come from the 2026-08-28 re-audit; 1–11 from the original review. Then:
 [acknowledged and not changed](#acknowledged-and-deliberately-not-changed),
@@ -774,85 +774,119 @@ win.
 
 ---
 
-## 13. The seizure path can take the CIP-68 reference NFT
+## 13. CIP-68 metadata tokens were governed by an exact name, not by their kind
 
-**Severity: medium. ACCEPTED BY DECISION (2026-08-28) — not fixed on chain.** Any power user holding
-`can_force_transfer`; not the admin.
+**Severity: medium. Fixed.** Reported as a seizure defect; fixed as a general rule, because the
+seizure hole was one symptom of the underlying shape.
 
-### What is wrong
+### What was wrong
 
-Every compliance scan in `third_party_transfer_logic_script.ak` is scoped to `security_asset_name`:
-the destination fold that feeds `compliance.verify_parties`, and `at_least_one_seized_input`. The
-CIP-68 reference NFT lives under the **same issuance policy** but a different asset name, so it is
-invisible to both.
+Every compliance scan in this substandard is scoped to `security_asset_name` — the destination folds
+that feed `compliance.verify_parties`, `at_least_one_seized_input`, the mint destination walk. A
+CIP-68 token lives under the **same issuance policy** but a different asset name, so it was invisible
+to all of them, and the only thing that distinguished it was an exact-name compile-time parameter,
+`reference_asset_name`.
 
-A `can_force_transfer` operator can therefore spend the admin-owned reference-NFT UTxO alongside one
-unit of their own security-token dust — the dust satisfying the "must actually seize something" gate
-— and re-output the NFT to any address, with any datum. No admin signature, no denylist check, no
-KYC check on the new holder, even with `requires_receiver_kyc` set: the NFT output carries no
-security token, so it never enters the destination list at all.
+That produced three gaps:
 
-The consequence is bounded but real. `minting_authority.reference_nft_output_is_pinned` pins the
-NFT's owner to `admin_credential_hash` **at registration**, which is what makes the admin the CIP-68
-metadata authority by construction. That pin applies at registration only, and nothing preserves it
-afterwards — so a seizure operator can take over the token's metadata. It cannot touch supply, the
-register, or any compliance gate; the reference NFT is metadata, exempt from the cap and from the
-denylist and KYC gates by design.
+1. **The seizure path could take it.** A `can_force_transfer` operator could spend the admin-owned
+   metadata UTxO alongside one unit of their own security-token dust — the dust satisfying "must
+   actually seize something" — and re-output the token to any address with any datum. No admin
+   signature, no denylist check, no KYC check, even with `requires_receiver_kyc` set. That defeats the
+   property registration establishes: the admin is the CIP-68 metadata authority by construction.
+2. **"Only one metadata token" was true by accident, not by design.** With an exact-name parameter at
+   most one name could ever match the metadata arm of the mint allowlist, so a second metadata token
+   was unconstructible — but nothing *stated* the rule, and it would have evaporated the moment the
+   parameter became anything less specific.
+3. **The UTxO's shape was a posture at genesis, not an invariant.** `reference_nft_output_is_pinned`
+   checked the owner and that the first supply was not co-located, once, at registration. It did not
+   inspect the datum at all, and nothing re-checked anything afterwards — so a later metadata update,
+   which travels the ordinary transfer path, could co-locate the token with supply or write a datum
+   no CIP-68 reader can parse.
 
-This was reproduced against the validator during the 2026-08-28 re-audit: the transaction is
-accepted.
+There was also a trap in the exact-name design. Setting `reference_asset_name == security_asset_name`
+was the documented way to disable CIP-68, which made "was a metadata token minted?" ambiguous: the
+quantity test read the security token's own mint. Every check had to carry an aliasing escape hatch,
+and getting one wrong would have refused every ordinary transfer.
 
-### Why it is accepted rather than fixed
+### The fix
 
-`can_force_transfer` is a trusted, admin-granted role. The operator holding it can already seize any
-holder's tokens; taking the metadata token is a smaller abuse by the same trusted party, it is
-visible on chain the moment it happens, and the admin's remedy — revoke the flag, transfer the NFT
-back — needs no protocol change. Weighed against that, the fix costs a new compile-time parameter on
-a hot-path validator, a script-hash change, and a second place where the CIP-68-disabled aliasing
-rule has to be got right.
-
-**The operational rule stands and is the mitigation**: a seizure operator must never include the
-reference NFT's UTxO in a seizure transaction (README, *CIP-68 reference NFT custody*). Grant
-`can_force_transfer` accordingly, and treat any movement of the reference NFT as an event worth
-alerting on.
-
-### The fix, if this is revisited
-
-Implemented and tested during the re-audit, then reverted by decision; recorded here so it does not
-have to be re-derived. `third_party_transfer_logic_validator` takes the CIP-68 asset name as a new
-final compile-time parameter and refuses any transaction that spends it:
+Identify metadata tokens by **kind**, not by name. `constants.protected_prefixes` lists the CIP-67
+labels that mark a token as metadata — `(100)` (`#"000643b0"`) and nothing else — and
+`lib/cip68.ak` holds the three predicates the validators share.
 
 ```aiken
-let reference_nft_untouched =
-  if reference_asset_name == security_asset_name {
-    True  // CIP-68 disabled: the two names alias — see below
-  } else {
-    !list.any(
-      self.inputs,
-      fn(input) {
-        quantity_of(input.output.value, expected_issuance_policy_id, reference_asset_name) > 0
-      },
-    )
-  }
+// lib/constants.ak
+pub const protected_prefixes: List<ByteArray> = [#"000643b0"]
 ```
 
-added as a conjunct of the handler's final `and { }`.
+**The security token may not be protected.** `verify_registration_structure` asserts
+`!cip68.is_protected(security_asset_name)`. This is what removes the aliasing trap: the protected set
+and the supply name are now disjoint by construction, so no check needs an escape hatch, and a
+deployment that named its supply `(100)…` fails closed at registration instead of silently refusing
+every transfer and seizure later.
 
-Three things that matter if it is ever reinstated:
+**Rule 1 — at most one metadata token, minted once.** `only_permitted_assets_minted` now admits a
+non-supply name only if a branch allows it (`RegisterMint` alone), it carries a protected prefix, and
+its quantity is exactly one — and separately counts protected entries, requiring `<= 1`. With
+prefixes, `(100)Foo` and `(100)Bar` both reach that arm, so the count has to be stated rather than
+assumed.
 
-* **Inputs, not outputs.** The NFT can only change hands if its UTxO is spent, so refusing the whole
-  transaction is simpler and stricter than vetting where the NFT lands. Metadata updates are
-  unaffected — they go through the ordinary transfer path, where the base layer requires the owner's
-  (the admin's) consent.
-* **The `if` is load-bearing.** Setting `reference_asset_name == security_asset_name` is the
-  documented way to switch CIP-68 off. Without the guard clause the scan would then match the seized
-  security tokens themselves and reject **every** seizure — the same aliasing trap
-  `minting_authority.ak` already guards at its `reference_nft_output_is_pinned` call site. Ship it
-  with a liveness test for that configuration, not only a negative test.
-* **Cost.** It is a new final parameter on `third_party_transfer_logic_validator`, so the script hash
-  moves — but that validator is registry field 4, which `UpgradeRegistryNode` can re-point in place.
-  No redeployment. The same value must be passed to `minting_authority_validator`, which already
-  takes `reference_asset_name`; a deploy script should assert the two match.
+**Rule 2 — the UTxO holds ADA plus that token, with a well-formed datum.**
+`cip68.output_is_well_formed` asserts the value structurally (`[Pair(ada, _), Pair(policy, names)]`,
+then `[Pair(name, 1)]`) and decodes the datum as `Cip68Datum` — CIP-68's `Constr 0 [metadata,
+version, extra]`. It runs at registration via `cip68_output_is_pinned`, which additionally pins the
+owner to the GlobalState admin, **and on every later move** inside `transfer_logic_script`'s existing
+output fold. That second half is what makes it an invariant: the transfer path is how a metadata
+update happens.
+
+**Rule 3 — seizure may not touch it.** `third_party_transfer_logic_script` refuses any transaction
+whose **inputs** carry a protected token. Inputs, not outputs, because the token can only change
+hands if its UTxO is spent, so refusing the whole transaction is simpler and stricter than vetting
+where it lands. Metadata updates are unaffected — they take the transfer path, where the base layer
+requires the owner's own consent.
+
+### Cost
+
+Rule 2's transfer-path half is on the hot path, so it was measured rather than assumed. The output
+fold now does ONE `assets.tokens` lookup per output and answers both of its questions from it — "is
+this a destination?" and "does this carry metadata?" — where it previously did one `quantity_of`.
+`aiken bench -m "transfer_logic_script.{..}"`, same seed, before and after:
+
+| | memory | CPU |
+|---|---|---|
+| 1 sender + 1 destination, before | 613.12 K | 182.77 M |
+| 1 sender + 1 destination, after | 630.92 K | 187.58 M |
+| | **+2.9 %** | **+2.6 %** |
+
+Growing to roughly +5 % memory at 30 parties per side. That is the price of the invariant, paid by
+every transfer; it was judged worth it because the alternative is a rule that is true only at genesis.
+
+### Tests
+
+`lib/cip68.ak` carries unit tests for both predicates — label `(100)` protected, `(333)` not, a
+truncated name not (and not a trap); and the canonical shape accepted against five rejections
+(co-located security token, foreign policy, quantity two, malformed datum, missing datum). The
+validators carry the integration tests: a registration whose metadata output has a malformed datum or
+holds supply; a registration whose `security_asset_name` is protected; a seizure that spends a
+protected token, with the ordinary seizure beside it as control; and a metadata update through the
+transfer path, well-formed as control and rejected when malformed or co-located. Every negative was
+run individually and its trace read, to confirm it stops at the intended assertion rather than
+incidentally — one of them did not at first, and was rewritten.
+
+One existing test changed its ANNOTATION, not its meaning:
+`register_mint_rejects_a_reference_nft_co_located_with_supply` was `!run_withdraw` and is now `fail`,
+because the co-location rule moved from a `Bool` conjunct into the structural assertion in
+`output_is_well_formed`. The transaction was rejected before and is rejected now.
+
+### Deployment
+
+`minting_authority_validator` loses the `reference_asset_name` parameter — **9 → 8** — so deploy
+scripts must drop it. No redeemer or datum schema changes. Three hashes move, all upgradeable in
+place: `minting_authority` (rotatable via `RotateMintingScript`), `transfer_logic_script` and
+`third_party_transfer_logic_script` (registry fields 3 and 4, re-pointable via
+`UpgradeRegistryNode`). Verified empirically: the two list mint validators' hashes do **not** move, so
+adding the constant perturbs nothing that does not use it.
 
 ---
 
@@ -1054,19 +1088,36 @@ weakens the gate. But nothing works until off-chain moves:
    `valid_until_ms ‖ security_policy_id ‖ network_id`. Use the exported encoders. Rebuild the root
    **before** calling `UpdateMemberRootHash`.
 
-### The 2026-08-28 fix: no schema change, two moved hashes
+### The 2026-08-28 fixes: no schema change, one dropped parameter, five moved hashes
 
-**No redeemer or datum schema changed**, and no compile-time parameter list changed. A transaction
-builder's *encoding* is therefore untouched: every redeemer constructor, field order and datum shape
-in `plutus.json` is byte-identical to the previous blueprint. Only `GlobalStateDatum`'s blueprint
-`description` string differs, because its doc comment was rewritten — cosmetic, not a schema change.
+**No redeemer or datum schema changed.** Every redeemer constructor, field order and datum shape in
+`plutus.json` is byte-identical, so a transaction builder's *encoding* is untouched.
 
-Two validator hashes moved, both for the same reason (fix 12):
+One compile-time **parameter list** changed: `minting_authority_validator` drops
+`reference_asset_name` (9 → 8), because fix 13 identifies metadata tokens by prefix rather than by an
+exact name. Deploy scripts must drop that argument; nothing else about them changes.
+
+Five hashes move in total across the two fixes, and they fall into two very different groups —
+see the tables below.
+
+**Fix 12 — redeploy-only.** These two hashes *are* the list policy ids, written into the GlobalState
+datum at genesis and immutable thereafter:
 
 | Validator | Change | Consequence |
 |---|---|---|
-| `denylist.mint` | `Deinit` deactivation gate | **Redeploy-only.** This hash *is* the denylist policy id, which is written into the GlobalState datum at genesis and immutable thereafter. |
-| `power_users.mint` | `Deinit` deactivation gate | **Redeploy-only**, for the same reason. |
+| `denylist.mint` | `Deinit` deactivation gate | **Redeploy-only** |
+| `power_users.mint` | `Deinit` deactivation gate | **Redeploy-only** |
+
+**Fix 13 — upgradeable in place.** None of these is baked into an immutable field:
+
+| Validator | Change | How it is rolled out |
+|---|---|---|
+| `minting_authority` | prefix rules, dropped parameter | `RotateMintingScript` — the GlobalState datum names it, admin-signed |
+| `transfer_logic_script` | the shape invariant on every move | `UpgradeRegistryNode` — registry field 3 |
+| `third_party_transfer_logic_script` | refuses protected inputs | `UpgradeRegistryNode` — registry field 4 |
+
+The two list mint hashes were verified **not** to move under fix 13, so adding
+`constants.protected_prefixes` perturbs nothing that does not read it.
 
 Every other validator's *source* is byte-identical, so every other **unapplied** hash in
 `plutus.json` is unchanged. But the two changed hashes are the two list **policy ids**, and those are
@@ -1208,8 +1259,8 @@ Grant the two roles together to whoever is expected to perform court- or regulat
 A full re-audit against `main @ ff5624e` — every non-test line re-read and composed against the
 CIP-113 base layer at its then-current HEAD, plus a multi-agent find/refute/prove-by-test pass —
 found **no Critical or High defect**. It produced defects [12](#12-dismantling-either-linked-list-was-a-one-way-freeze-of-a-live-protocol)
-and [13](#13-the-seizure-path-can-take-the-cip-68-reference-nft) (both Medium — 12 fixed here, 13
-accepted by decision with its fix recorded),
+and [13](#13-cip-68-metadata-tokens-were-governed-by-an-exact-name-not-by-their-kind) (both Medium,
+both fixed),
 the correction to [§7](#7-the-globalstate-utxos-ada-balance-was-unconstrained) recorded above, the
 [acknowledged items](#acknowledged-and-deliberately-not-changed), and the base-layer
 re-verification. Around fifty attempted attacks were refuted against a specific line — including one

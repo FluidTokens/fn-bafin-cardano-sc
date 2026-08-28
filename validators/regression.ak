@@ -106,10 +106,6 @@ const authority_hash: ByteArray =
 
 /// CIP-113 programmable-logic-base script — the shared payment credential of
 /// every compliant token UTxO.
-/// The CIP-68 reference NFT's asset name, under the same issuance policy as
-/// the security asset.
-const reference_name: ByteArray = "REF"
-
 const plb_hash: ByteArray =
   #"05050505050505050505050505050505050505050505050505050505"
 
@@ -695,7 +691,6 @@ fn run_authority(
     issuance_policy,
     denylist_script_hash,
     pu_script_hash,
-    reference_name,
     redeemer,
     Script(authority_hash),
     tx,

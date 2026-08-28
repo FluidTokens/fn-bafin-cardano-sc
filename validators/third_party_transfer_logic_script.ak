@@ -14,6 +14,7 @@ use cardano/certificate.{Certificate, RegisterCredential}
 use cardano/transaction.{
   InlineDatum, Input, NoDatum, Output, OutputReference, Transaction,
 }
+use cip68
 use compliance
 use constants
 use kyc/verify.{membership_leaf_key, membership_leaf_value}
@@ -181,9 +182,30 @@ validator third_party_transfer_logic_validator(
       },
     )
 
+    // The seizure path moves VALUE. A CIP-68 token under this same policy is
+    // METADATA — exempt from the supply cap and from the denylist and KYC gates
+    // — so every scan above is scoped to `security_asset_name` and none of them
+    // would ever look at it. Refusing outright to run over a transaction that
+    // spends one is what keeps an operator from carrying the token's metadata
+    // authority away under cover of an ordinary seizure.
+    //
+    // INPUTS, not outputs: a token can only change hands if its UTxO is spent.
+    // Metadata updates are unaffected — they take the ordinary transfer path,
+    // where the base layer requires the owner's own consent.
+    let no_protected_tokens_spent = !list.any(
+      self.inputs,
+      fn(input) {
+        cip68.value_has_protected(
+          input.output.value,
+          expected_issuance_policy_id,
+        )
+      },
+    )
+
     and {
       gs_datum.deactivated == False,
       at_least_one_seized_input,
+      no_protected_tokens_spent?,
       all_destinations_ok,
       power_user_data.can_force_transfer,
       must_be_signed_by_credential(self, power_user_node_key),
@@ -1077,4 +1099,77 @@ bench seizure_cost_by_destination_count(n via n_destinations) {
   }
   // Assert rather than `fail`-annotate — see `transfer_cost_by_party_count`.
   expect run_third_party(redeemer, tx)
+}
+
+/// A CIP-67 `(100)` reference-token name under the policed policy — metadata,
+/// not value, and therefore protected.
+const p_ref_name: ByteArray = #"000643b04d657461"
+
+/// A UTxO holding ONLY the CIP-68 reference token, owned by `owner_stake`.
+/// This is the shape `minting_authority` creates at registration.
+fn p_reference_nft_input(ix: Int, owner_stake: ByteArray) -> Input {
+  Input {
+    output_reference: p_out_ref(ix),
+    output: Output {
+      address: Address {
+        payment_credential: Script(p_plb_hash),
+        stake_credential: Some(Inline(VerificationKey(owner_stake))),
+      },
+      value: merge(
+        from_lovelace(2_000_000),
+        from_asset(p_issuance_policy, p_ref_name, 1),
+      ),
+      datum: NoDatum,
+      reference_script: None,
+    },
+  }
+}
+
+// ── Protected prefixes are out of the seizure path's reach ───────────────────
+//
+// THE DEFECT the guard closes. Every compliance scan here is scoped to
+// `security_asset_name`: the destination fold that feeds
+// `compliance.verify_parties`, and `at_least_one_seized_input`. A CIP-68 token
+// lives under the SAME issuance policy but a different asset name, so it was
+// invisible to both. A `can_force_transfer` operator could spend the
+// admin-owned metadata UTxO alongside a unit of their own dust — the dust
+// satisfying "must actually seize something" — and re-output it to any address
+// with any datum. No admin signature, no denylist check, no KYC check.
+//
+// THE GUARD. `no_protected_tokens_spent`: no INPUT may carry a protected-prefix
+// token under the policed policy. Inputs, not outputs, because the token can
+// only change hands if its UTxO is spent — so refusing the whole transaction is
+// both simpler and stricter than vetting where it lands. Metadata updates are
+// unaffected: they go through the ordinary transfer path, where the base layer
+// requires the owner's consent.
+
+/// THE ATTACK: a fully compliant seizure that ALSO spends the CIP-68 metadata
+/// UTxO and re-outputs it to the operator. Every other conjunct is satisfied,
+/// so this can only fail on the new guard.
+test seizure_cannot_spend_a_protected_prefix_token() {
+  let tx = Transaction {
+    ..p_tx(
+      False,
+      False,
+      False,
+      True,
+      [p_seized_input(), p_reference_nft_input(12, p_source_stake)],
+      [p_pu_cred],
+    ),
+    outputs: [
+      p_token_utxo(p_dest_stake, 1_000),
+      p_reference_nft_input(12, p_dest_stake).output,
+    ],
+  }
+  !run_third_party(p_redeemer(), tx)
+}
+
+/// POSITIVE CONTROL, same fixtures minus the protected input: an ordinary
+/// seizure must still be accepted.
+test seizure_succeeds_when_no_protected_token_is_spent() {
+  let tx = Transaction {
+    ..p_tx(False, False, False, True, [p_seized_input()], [p_pu_cred]),
+    outputs: [p_token_utxo(p_dest_stake, 1_000)],
+  }
+  run_third_party(p_redeemer(), tx)
 }
