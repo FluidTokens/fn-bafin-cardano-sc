@@ -46,6 +46,10 @@ pub const max_security_info_bytes = 4096
 // metadata value.
 pub const max_trusted_entity_metadata_bytes = 512
 
+// Maximum serialised (CBOR) size, in bytes, of a single denylist entry's
+// metadata value.
+pub const max_denylist_metadata_bytes = 512
+
 // ============================================================================
 // CIP-68 protected asset-name prefix
 // ============================================================================
