@@ -82,13 +82,17 @@ validator power_users_validator(
             fn(
               _address,
               _lovelace_change,
-              _node_key,
+              node_key_opt,
               _old_data,
               new_data,
               _link,
             ) {
+              expect Some(node_key) = node_key_opt
               expect power_user_data: PowerUser = new_data
-              power_user_data == wanted_user_state
+              and {
+                power_user_data == wanted_user_state,
+                power_user_data.credential_hash == node_key,
+              }
             },
           )
             |> run_element_with(
@@ -241,8 +245,11 @@ validator mint(
               node_data,
               _link,
             ) {
-              expect _parsed: PowerUser = node_data
-              node_key == new_power_user_key
+              expect power_user_data: PowerUser = node_data
+              and {
+                node_key == new_power_user_key,
+                power_user_data.credential_hash == node_key,
+              }
             },
           )
             |> run_element_with(
@@ -502,9 +509,12 @@ fn t_pu_root_input_linked(ix: Int, link: Option<ByteArray>) -> Input {
 /// A power-user node output keyed at an arbitrary `key` — `t_pu_node_input`
 /// is hardwired to `t_pu_cred`, but an insert must produce a node at the key
 /// the redeemer names.
-fn t_pu_new_node_output(key: ByteArray) -> Output {
+fn t_pu_new_node_output_with_credential(
+  key: ByteArray,
+  credential_hash: ByteArray,
+) -> Output {
   let pu = PowerUser {
-    credential_hash: key,
+    credential_hash,
     is_admin: False,
     can_mint: False,
     can_burn: False,
@@ -527,6 +537,10 @@ fn t_pu_new_node_output(key: ByteArray) -> Output {
     datum: InlineDatum(element),
     reference_script: None,
   }
+}
+
+fn t_pu_new_node_output(key: ByteArray) -> Output {
+  t_pu_new_node_output_with_credential(key, key)
 }
 
 fn t_gs_datum(deactivated: Bool) -> GlobalStateDatum {
@@ -669,6 +683,17 @@ test power_users_insert_accepts_a_28_byte_key() {
   t_run_pu_add(t_key_28, t_pu_insert_tx(t_key_28))
 }
 
+test power_users_insert_rejects_a_mismatched_credential_hash() fail {
+  let tx = Transaction {
+    ..t_pu_insert_tx(t_key_28),
+    outputs: [
+      t_pu_root_output(Some(t_key_28)),
+      t_pu_new_node_output_with_credential(t_key_28, t_pu_cred),
+    ],
+  }
+  t_run_pu_add(t_key_28, tx)
+}
+
 /// THE GUARD under test, one byte short. `bytearray.length(new_power_user_key)
 /// == 28` is the FIRST conjunct of the branch's `and { }`, so it
 /// short-circuits before `insert_ascending` ever runs. Returns False, hence
@@ -762,6 +787,12 @@ fn t_run_pu_modify(wanted: PowerUser, tx: Transaction) -> Bool {
 test power_user_modify_accepts_an_admin_signed_change_matching_the_wanted_state() {
   let old_pu = t_power_user(False, False, False, False, False)
   let new_pu = PowerUser { ..old_pu, can_mint: True }
+  t_run_pu_modify(new_pu, t_pu_modify_tx(old_pu, new_pu))
+}
+
+test power_user_modify_rejects_a_mismatched_credential_hash() fail {
+  let old_pu = t_power_user(False, False, False, False, False)
+  let new_pu = PowerUser { ..old_pu, credential_hash: t_key_28, can_mint: True }
   t_run_pu_modify(new_pu, t_pu_modify_tx(old_pu, new_pu))
 }
 
