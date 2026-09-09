@@ -166,6 +166,8 @@ validator global_state_mint_validator(tx0: ByteArray, index0: Int) {
       quantity_of_policy_id(self.mint, policy_id) == 1,
       // Exactly one global_state NFT is minted.
       quantity_of(self.mint, policy_id, constants.global_state_asset_name) == 1,
+      // GlobalState is state, not script storage.
+      output_parameters.reference_script == None,
       //Initial datum is well-formed (sort, no duplicates, correct field widths,
       //LL root NFTs also minted in this tx).
       sanitise_initial_datum(output_datum, self.mint),
@@ -259,6 +261,9 @@ validator global_state_spend_validator(
     let value_preserved = without_lovelace(own_input.output.value) == without_lovelace(
       global_state_output.value,
     )
+    // GlobalState is a central state UTxO. It must not carry script bytes that
+    // make every transaction touching it heavier.
+    let no_reference_script = global_state_output.reference_script == None
 
     // Non-MintSecurity branches reject concurrent security mint (preserves
     // supply-cap integrity across all non-cap-aware admin flows).
@@ -319,6 +324,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           builtin.equals_data(expected_output_datum, global_state_output_datum),
         }
       }
@@ -344,6 +350,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           //Must have permission to pause/unpause transfers
           power_user_data.can_pause,
           //Must be signed by the power user
@@ -362,6 +369,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           // Datum growth cap — see `constants.max_security_info_bytes`.
           bytearray.length(builtin.serialise_data(new_security_info)) <= constants.max_security_info_bytes,
           //Must be signed by the current admin (from input datum)
@@ -388,6 +396,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           must_be_signed_by_credential(self, input_datum.admin_credential_hash),
           bytearray.length(vkey) == 32,
           !has_key,
@@ -414,6 +423,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           has_key,
           must_be_signed_by_credential(self, input_datum.admin_credential_hash),
           builtin.equals_data(expected_output_datum, global_state_output_datum),
@@ -452,6 +462,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           old_exists,
           new_clash_ok,
           bytearray.length(new_vkey) == 32,
@@ -472,6 +483,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           must_be_signed_by_credential(self, input_datum.admin_credential_hash),
           builtin.equals_data(expected_output_datum, global_state_output_datum),
         }
@@ -487,6 +499,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           must_be_signed_by_credential(self, input_datum.admin_credential_hash),
           builtin.equals_data(expected_output_datum, global_state_output_datum),
         }
@@ -503,6 +516,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           // Keep the membership root well-formed: empty or a 32-byte digest;
           // any other length makes `mpf.from_root` trap on every transfer.
           or {
@@ -524,6 +538,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           bytearray.length(new_admin_credential_hash) == 28,
           //Dual-sig: both old (from input datum) and new admins must sign.
           //Prevents silent takeover; prevents lost-key soft-brick by
@@ -544,6 +559,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           bytearray.length(new_minting_script_credential_hash) == 28,
           // The one-way upgrade lock closes this path permanently. See
           // `upgrades_locked` on GlobalStateDatum.
@@ -567,6 +583,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           // One-way: refuse to re-lock, so the action is never a silent
           // no-op and the transition True->True cannot be used to churn the
           // UTxO. Nothing anywhere sets this field back to False — every
@@ -585,6 +602,7 @@ validator global_state_spend_validator(
           address_preserved,
           nft_preserved,
           value_preserved,
+          no_reference_script,
           //Can only deactivate from a paused state (mirrors CMTAT
           //`deactivateContract`, which requires the contract be paused first).
           input_datum.transfers_paused,
@@ -633,6 +651,8 @@ const t_minting_script: ByteArray =
 
 const t_new_minting_script: ByteArray =
   #"ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+
+const t_reference_script: ByteArray = #"4e4d01000033222220051200120011"
 
 fn t_out_ref(ix: Int) -> OutputReference {
   OutputReference {
@@ -692,6 +712,10 @@ fn t_output(datum: GlobalStateDatum) -> Output {
     datum: InlineDatum(datum),
     reference_script: None,
   }
+}
+
+fn t_output_with_reference_script(datum: GlobalStateDatum) -> Output {
+  Output { ..t_output(datum), reference_script: Some(t_reference_script) }
 }
 
 fn t_tx(
@@ -813,6 +837,24 @@ test rotate_minting_script_cannot_smuggle_another_field_change() {
     input_datum,
     rotate_minting_script_redeemer(t_new_minting_script),
     t_tx(input_datum, output_datum, [t_admin]),
+  )
+}
+
+test global_state_spend_rejects_reference_script_on_output() {
+  let input_datum = t_datum(False, False)
+  let output_datum = GlobalStateDatum {
+    ..input_datum,
+    minting_script_credential_hash: t_new_minting_script,
+    upgrades_locked: False,
+  }
+  let tx = Transaction {
+    ..t_tx(input_datum, output_datum, [t_admin]),
+    outputs: [t_output_with_reference_script(output_datum)],
+  }
+  !run_spend(
+    input_datum,
+    rotate_minting_script_redeemer(t_new_minting_script),
+    tx,
   )
 }
 
@@ -1579,6 +1621,10 @@ fn t_mint_output(datum: GlobalStateDatum) -> Output {
   }
 }
 
+fn t_mint_output_with_reference_script(datum: GlobalStateDatum) -> Output {
+  Output { ..t_mint_output(datum), reference_script: Some(t_reference_script) }
+}
+
 /// A plain output carrying no asset of `t_gs_policy` at all.
 fn t_mint_plain_output() -> Output {
   Output {
@@ -1614,6 +1660,22 @@ test global_state_mint_succeeds_with_nonce_and_sanitised_datum() {
   run_mint(
     t_gs_policy,
     t_mint_tx([t_nonce_input()], [t_mint_output(datum)], mint),
+  )
+}
+
+test global_state_mint_rejects_reference_script_on_output() {
+  let datum = sanitise_datum(#"", 1)
+  let mint = merge(
+    from_asset(t_gs_policy, constants.global_state_asset_name, 1),
+    sanitise_mint(),
+  )
+  !run_mint(
+    t_gs_policy,
+    t_mint_tx(
+      [t_nonce_input()],
+      [t_mint_output_with_reference_script(datum)],
+      mint,
+    ),
   )
 }
 
