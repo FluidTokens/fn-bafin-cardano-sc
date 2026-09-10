@@ -237,9 +237,11 @@ validator mint(
               node_data,
               _link,
             ) {
-              // Datum type must be correct (metadata is free-form Data).
-              expect _parsed: Denylist = node_data
-              node_key == user_pkh
+              expect denylist_data: Denylist = node_data
+              and {
+                node_key == user_pkh,
+                bytearray.length(builtin.serialise_data(denylist_data.metadata)) <= constants.max_denylist_metadata_bytes,
+              }
             },
           )
             |> run_element_with(
@@ -466,15 +468,22 @@ fn t_dl_root_input_linked(ix: Int, link: Option<ByteArray>) -> Input {
   Input { output_reference: t_oref(ix), output: t_dl_root_output(link) }
 }
 
-/// A denylist node whose data is a well-formed `Denylist` — required
-/// wherever the mint branch decodes a node's data (`expect _parsed: Denylist
-/// = ...`), on both the appended-node output and the removed-node input.
-fn t_dl_sanction_node_output(key: ByteArray) -> Output {
+/// A denylist node whose data is a well-formed `Denylist` — required wherever
+/// the mint branch decodes a node's data, on both the appended-node output and
+/// the removed-node input.
+fn t_dl_sanction_node_output_with_metadata(
+  key: ByteArray,
+  metadata: Data,
+) -> Output {
   let element: Element<Data, Denylist> = Element {
-    data: Node { data: Denylist { metadata: builtin.constr_data(0, []) } },
+    data: Node { data: Denylist { metadata } },
     link: None,
   }
   Output { ..t_dl_node_input(0, key).output, datum: InlineDatum(element) }
+}
+
+fn t_dl_sanction_node_output(key: ByteArray) -> Output {
+  t_dl_sanction_node_output_with_metadata(key, builtin.constr_data(0, []))
 }
 
 /// A UTxO sitting at the denylist's own spend address that carries NO
@@ -568,6 +577,14 @@ fn t_pu_node_input(ix: Int, pu: PowerUser) -> Input {
   }
 }
 
+fn t_data_of_raw_length(raw_len: Int) -> Data {
+  builtin.b_data(bytearray.from_int_big_endian(0, raw_len))
+}
+
+const t_metadata_len_at_cap: Int = 494
+
+const t_metadata_len_over_cap: Int = 495
+
 // ── Guard 1: the spend gate binds to the UTxO actually being spent ─────────
 
 /// POSITIVE control. A genuine node spend under `StateTransition`, with a
@@ -653,6 +670,34 @@ fn t_run_denylist_add(key: ByteArray, tx: Transaction) -> Bool {
 /// only in the key's length.
 test denylist_insert_accepts_a_28_byte_key() {
   t_run_denylist_add(t_key_28, t_dl_insert_tx(t_key_28))
+}
+
+test denylist_insert_accepts_metadata_at_the_size_cap() {
+  let tx = Transaction {
+    ..t_dl_insert_tx(t_key_28),
+    outputs: [
+      t_dl_root_output(Some(t_key_28)),
+      t_dl_sanction_node_output_with_metadata(
+        t_key_28,
+        t_data_of_raw_length(t_metadata_len_at_cap),
+      ),
+    ],
+  }
+  t_run_denylist_add(t_key_28, tx)
+}
+
+test denylist_insert_rejects_metadata_one_byte_over_the_size_cap() fail {
+  let tx = Transaction {
+    ..t_dl_insert_tx(t_key_28),
+    outputs: [
+      t_dl_root_output(Some(t_key_28)),
+      t_dl_sanction_node_output_with_metadata(
+        t_key_28,
+        t_data_of_raw_length(t_metadata_len_over_cap),
+      ),
+    ],
+  }
+  t_run_denylist_add(t_key_28, tx)
 }
 
 /// THE GUARD under test, one byte short. `bytearray.length(user_pkh) == 28`

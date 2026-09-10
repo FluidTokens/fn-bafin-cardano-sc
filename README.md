@@ -76,6 +76,10 @@ rejected by the ledger, and any spend may shrink a field again — but the Globa
 by every mint, burn and admin action, and an inflated datum eats the room a mint needs for its KYC
 proofs (≈ 370 B per attested destination).
 
+Denylist entry metadata is also free-form `Data`, but each new entry is capped at 512 B once
+CBOR-serialised. Larger case files, legal records, or evidence should live off-chain and be
+referenced by compact identifiers or hashes.
+
 ### Review and audit
 
 * **Penetration testing** — two engagements have been carried out by FT Labs, on 23 and 26 June
